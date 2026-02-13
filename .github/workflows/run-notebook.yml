@@ -1,0 +1,32 @@
+name: Run Notebook
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  run-notebook:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+
+      - name: Lint with ruff
+        shell: micromamba-shell {0}
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Run notebook
+        shell: micromamba-shell {0}
+        run: |
+          pytest --nbmake project.ipynb

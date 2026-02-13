@@ -1,0 +1,23 @@
+name: projects-student-template
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core scientific packages (pinned to major.minor)
+  - python>=3.11,<3.14
+  - numpy>=2.0
+  - pandas>=2.0
+  - matplotlib>=3.9
+  - seaborn>=0.13
+  - scipy>=1.14
+  - statsmodels>=0.14
+  # Development tools
+  - jupyterlab
+  - ipykernel
+  - nbconvert
+  - pytest
+  - ruff
+  - pre-commit
+  - pip
+  - pip:
+      - nbmake

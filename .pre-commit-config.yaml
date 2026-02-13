@@ -1,0 +1,24 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (unit tests)
+        entry: pytest tests/ -v
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: nbmake
+        name: nbmake (notebook execution)
+        entry: pytest --nbmake
+        language: system
+        files: \.ipynb$
+        pass_filenames: true
+        types: [jupyter]
