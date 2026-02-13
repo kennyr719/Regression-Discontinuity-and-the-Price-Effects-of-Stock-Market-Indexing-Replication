@@ -1,10 +1,44 @@
-[![Run Notebook](https://github.com/eisenhauerIO/projects-businss-decisions/actions/workflows/run-notebook.yml/badge.svg)](https://github.com/eisenhauerIO/projects-businss-decisions/actions/workflows/run-notebook.yml)
+# Regression Discontinuity and the Price Effects of Stock Market Indexing
+
+[![Run Notebook](https://github.com/<username>/russell-rd-replication/actions/workflows/run-notebook.yml/badge.svg)](https://github.com/<username>/russell-rd-replication/actions/workflows/run-notebook.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-## Project Example
+## Replication Project
 
-The notebook project.ipynb contains an example project by [Annica Gehlen](https://github.com/amageh) from the 2019 iteration of the [OSE data science](https://github.com/OpenSourceEconomics/ose-course-data-science) class at Bonn University. It replicates the results from the following paper:
+The notebook `project.ipynb` contains a replication project for the [ECON 481: Economics Data Science](https://catalog.registrar.washington.edu/course/ECON/481) class at the University of Washington. It replicates the main results from the following paper:
 
-* Lindo, J. M., Sanders, N. J., & Oreopoulos, P. (2010). [Ability, Gender, and Performance Standards: Evidence from Academic Probation](https://www.aeaweb.org/articles?id=10.1257/app.2.2.95). *American Economic Journal: Applied Economics*, 2(2), 95-117.
+> Chang, Y.-C., Hong, H., & Liskovich, I. (2015). [Regression Discontinuity and the Price Effects of Stock Market Indexing](https://doi.org/10.1093/rfs/hhu041). *The Review of Financial Studies*, 28(1), 212–246.
 
-Lindo et al. (2010) examine the effects of academic probation on student outcomes using a regression discontinuity design. The analysis is based on data from a large Canadian university and evaluates whether academic probation is successful in improving the performance of low scoring students. Consistent with a model of performance standards, the authors find that being placed on probation in the first year of university induces some students to drop out of school while it improves the grades of students who continue their studies. In a more general sense, academic probation can offer insights into how agents respond to negative incentives and the threat of punishment in a real-world context.
+Chang et al. (2015) use a fuzzy regression discontinuity design to estimate the causal price effects of stock market indexing. The Russell 1000 and Russell 2000 indexes comprise the first 1,000 and next 2,000 largest U.S. firms ranked by market capitalization. Because the indexes are value-weighted, stocks just below the 1,000 cutoff receive significantly higher index weight — and thus more passive buying pressure — than stocks just above. Exploiting this discontinuity over the period 1996–2012, the authors find symmetric addition and deletion effects of approximately 5%, estimate a price elasticity of demand around −1.5, and document that demand curves have become more elastic over time as arbitrage capacity has grown.
+
+## Project Structure
+
+```
+├── auxiliary/          # Helper functions for data processing and estimation
+├── data/               # Raw and processed datasets
+├── files/              # Output figures and tables
+├── tests/              # Unit tests for auxiliary functions
+├── project.ipynb       # Main project notebook
+├── environment.yml     # Conda environment specification
+└── pyproject.toml      # Project configuration and linting settings
+```
+
+## Reproducibility
+
+To reproduce the results, clone this repository and create the conda environment:
+
+```bash
+$ conda env create -f environment.yml
+$ conda activate russell-rd
+$ jupyter lab
+```
+
+Then open and run `project.ipynb`.
+
+## Data Sources
+
+- **CRSP US Stock Database** — Stock prices, returns, shares outstanding, and trading volume
+- **Compustat** — Quarterly shares outstanding (CSHOQ), earnings report dates (RDQ), and firm fundamentals
+- **Russell/FTSE Russell** — Annual constituent lists for the Russell 1000 and Russell 2000 (1996–2012)
+
+Data is accessed through [WRDS (Wharton Research Data Services)](https://wrds-www.wharton.upenn.edu/).

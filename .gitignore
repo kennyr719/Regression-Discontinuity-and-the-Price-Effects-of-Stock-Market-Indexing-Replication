@@ -1,13 +1,13 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints/
-
-# pytest
-.pytest_cache/
 
 # Environment
 .env
@@ -16,16 +16,21 @@ env/
 venv/
 
 # IDE
-.idea/
 .vscode/
-*.swp
-*.swo
+.idea/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
+# Data (large files — download via WRDS)
+data/raw/
+*.csv
+*.dta
+*.sas7bdat
+!data/.gitkeep
+
+# Output
+files/*.png
+files/*.pdf
+!files/.gitkeep

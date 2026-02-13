@@ -1,7 +1,7 @@
 [project]
-name = "student-project"
+name = "russell-rd-replication"
 version = "0.1.0"
-description = "Replication of Lindo et al. (2010) - Academic Probation RDD Analysis"
+description = "Replication of Chang, Hong, and Liskovich (2015) — Regression Discontinuity and the Price Effects of Stock Market Indexing"
 requires-python = ">=3.11"
 
 [tool.ruff]
@@ -10,11 +10,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
-ignore = ["E501"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["auxiliary"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-filterwarnings = ["ignore::DeprecationWarning"]
+python_files = ["test_*.py"]

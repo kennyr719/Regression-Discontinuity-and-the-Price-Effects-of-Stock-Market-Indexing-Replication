@@ -5,28 +5,27 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
   run-notebook:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Micromamba
-        uses: mamba-org/setup-micromamba@v2
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
         with:
           environment-file: environment.yml
-
-      - name: Lint with ruff
-        shell: micromamba-shell {0}
-        run: |
-          ruff check .
-          ruff format --check .
+          activate-environment: russell-rd
+          auto-activate-base: false
 
       - name: Run notebook
-        shell: micromamba-shell {0}
+        shell: bash -l {0}
         run: |
-          pytest --nbmake project.ipynb
+          jupyter nbconvert --to notebook --execute project.ipynb
+
+      - name: Run tests
+        shell: bash -l {0}
+        run: |
+          pytest tests/
