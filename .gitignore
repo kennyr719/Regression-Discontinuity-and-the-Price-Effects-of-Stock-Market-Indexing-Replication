@@ -34,3 +34,4 @@ data/raw/
 files/*.png
 files/*.pdf
 !files/.gitkeep
+data/
