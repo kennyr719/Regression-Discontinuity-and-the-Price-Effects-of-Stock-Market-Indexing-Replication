@@ -11,14 +11,26 @@ The notebook `project.ipynb` contains a replication project for the [ECON 481: E
 
 Chang et al. (2015) use a fuzzy regression discontinuity design to estimate the causal price effects of stock market indexing. The Russell 1000 and Russell 2000 indexes comprise the first 1,000 and next 2,000 largest U.S. firms ranked by market capitalization. Because the indexes are value-weighted, stocks just below the 1,000 cutoff receive significantly higher index weight — and thus more passive buying pressure — than stocks just above. Exploiting this discontinuity over the period 1996–2012, the authors find symmetric addition and deletion effects of approximately 5%, estimate a price elasticity of demand around −1.5, and document that demand curves have become more elastic over time as arbitrage capacity has grown.
 
+## Extension: 2015–2024
+
+We extend the analysis to 2015–2024 to test whether the index premium has changed as passive investing's market share tripled (~15% to ~50%). This frames a test of two competing hypotheses:
+
+- **Passive distortion hypothesis**: larger price effects due to more passive money
+- **Arbitrage efficiency hypothesis**: smaller effects as arbitrage capacity scales alongside passive growth
+
 ## Project Structure
 
 ```
 ├── auxiliary/          # Helper functions for data processing and estimation
-├── data/               # Raw and processed datasets
+│   ├── data_processing.py  # Data loading, merging, ranking, banding
+│   ├── estimation.py       # Fuzzy RD 2SLS, time trends
+│   └── plotting.py         # RD plots, binned scatter, time trends
+├── data/               # Raw datasets (gitignored)
 ├── files/              # Output figures and tables
+├── memory/             # Persistent notes across sessions
 ├── tests/              # Unit tests for auxiliary functions
 ├── project.ipynb       # Main project notebook
+├── CLAUDE.md           # Project guidance document
 ├── environment.yml     # Conda environment specification
 └── pyproject.toml      # Project configuration and linting settings
 ```

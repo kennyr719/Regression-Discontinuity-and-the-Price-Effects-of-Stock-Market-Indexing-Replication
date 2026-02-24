@@ -14,6 +14,78 @@ After replicating the original 1996–2012 results, we extend the sample to 2015
 - **Passive distortion hypothesis**: larger price effects due to more passive money
 - **Arbitrage efficiency hypothesis**: smaller effects as arbitrage capacity scales alongside passive growth
 
+---
+
+## Current Project State (as of latest session)
+
+### What is COMPLETE and working ✅
+- **Data pipeline**: `merge_crsp_compustat()` and `compute_market_cap_rankings()` — fully implemented and verified. Rankings for 1996–2024 are correct (top stocks check out, rank-1000 market caps in expected range).
+- **Sample construction**: `identify_index_switchers()` — builds addition/deletion panels using prior-year rank as membership proxy. Sets D = τ (sharp RD approximation).
+- **Outcome variables**: `construct_outcome_variables()` (monthly returns) and `construct_volume_ratio()` (VR) are implemented.
+- **Estimation**: `fuzzy_rd_estimate()` (2SLS with year FE) and `fuzzy_rd_time_trend()` (time trend interaction) are implemented.
+- **Validity tests**: `construct_validity_variables()` merges Compustat annual fundamentals.
+- **Notebook Sections 1–3, 6 (Table 4), 8 (Table 6), 9 (extension)**: Executed with output.
+- **Figures 4 and 5**: Generated and saved to `files/`.
+
+### What is CODED but NOT YET RUN (no output in notebook) ⏳
+- Section 4 (Figure 1 — market cap continuity plot)
+- Section 5 (Table 3 — first-stage regressions) — Cells 17–18
+- Section 7 (Table 5 — VR fuzzy RD) — Cell 23
+
+### What STILL NEEDS IMPLEMENTATION 🔲
+- `optimal_bandwidth()` in `estimation.py` — still `raise NotImplementedError`
+- `plot_index_weights()` in `plotting.py` — still `raise NotImplementedError`
+- Summary table in Cell 29 — still has placeholder dashes
+
+### Known Issues / Bugs 🐛
+See the "Priority Fixes" section below for detailed instructions.
+
+---
+
+## Priority Fixes (IMPLEMENT THESE)
+
+### FIX 1 ✅ DONE: `compute_banding_cutoffs()` — correct band calculation
+
+**What was fixed**: The band uses *reverse cumulative market cap* as described in footnote 5 of Chang et al. (2015). C_rev%(k) = fraction of total R3000E market cap held by stocks ranked k through N (bottom-up cumulation). C_rev%(1000) ≈ 9–10%. Band: stocks switch only if C_rev%(k) deviates by > 2.5pp from C_rev%(1000).
+
+**Result**: Cutoffs k_add≈1251–1545, k_del≈738–823. Verified against footnote 5 example: stock 1210 in 2007 at C_rev%=7.24% stays in R1000 (band lower limit 6.89%) ✓.
+
+### FIX 2: Run unexecuted notebook cells
+
+After Fix 1, execute these cells that are coded but have no output:
+- Cell 15 (Figure 1 — market cap continuity)
+- Cells 17–18 (Table 3 — first-stage regressions + post-banding diagnostic)
+- Cell 23 (Table 5 — VR fuzzy RD)
+
+### FIX 3: Fill in the Summary Table (Cell 29)
+
+Cell 29 (Section 10) has a markdown table with placeholder dashes. After re-running everything, update it with the actual replicated values. Format:
+
+| Result | Original | Replicated | Match? |
+|--------|----------|------------|--------|
+| Addition effect (June return) | 5.0% (t=2.65) | [our value] | [close/attenuated/etc] |
+| ... | ... | ... | ... |
+
+Note: Our estimates will be attenuated vs. the paper because we use D = τ (sharp RD) rather than actual Russell constituent lists (fuzzy RD). The paper's LATE = ITT / first_stage, so our ITT will be smaller by a factor of ~0.785. Acknowledge this in the table.
+
+### FIX 4: Extension conclusion (Cell 27)
+
+Add a concluding paragraph after the results table that:
+1. Acknowledges sample size limitations (especially post-banding addition sample)
+2. Notes the attenuation problem (D = τ, no actual Russell lists)
+3. States which hypothesis is supported (or that the evidence is inconclusive)
+4. Highlights the one robust finding: the deletion time trend in 1996–2012 (β_2r = −0.56%, t = −2.87) replicates the paper's declining price impact result
+
+### FIX 5: Clean up legacy template files
+
+- Delete `auxiliary/plots.py`, `auxiliary/predictions.py`, `auxiliary/tables.py` — these are leftover from the eisenhauerIO student template (they reference GPA, academic probation, etc.) and are not used
+- Delete `files/causalgraph1.PNG`, `files/causalgraph2.PNG`, `files/bounds_nextGPA.PNG` — template images
+- Update `README.md` — it still describes Lindo et al. (2010); replace with a description of this project
+- Delete `edit_notebook.py`, `edit_notebook_extension.py`, `edit_notebook_fig5.py`, `edit_notebook_plot.py` — one-off notebook editing scripts, no longer needed
+- Update `auxiliary/__init__.py` to remove imports of deleted modules
+
+---
+
 ## Key Methodology
 
 ### The RD Design
@@ -22,11 +94,15 @@ After replicating the original 1996–2012 results, we extend the sample to 2015
 - Because the Russell 2000 is value-weighted, stocks just below rank 1000 receive ~10x higher index weight than stocks just above
 - This creates a discontinuity in passive buying pressure at the cutoff
 - The paper uses a **fuzzy RD** because predicted rankings don't perfectly match actual Russell assignments
+- We use D = τ (sharp RD) because actual Russell constituent lists are unavailable via our WRDS subscription
 
 ### Post-2007 Banding Policy
 Starting with the 2007 reconstitution, Russell implemented a banding policy:
-- A stock only switches indexes if its cumulative market cap deviates more than 2.5% from the 1000th stock's cumulative market cap in the Russell 3000E
-- This means the effective cutoff shifts each year after 2007
+- Define C_rev%(k) = fraction of total R3000E market cap held by stocks ranked k through N (reverse/bottom-up cumulation)
+- C_rev%(1000) ≈ 9–10%; a stock switches only if C_rev%(k) deviates by >2.5 percentage points
+- Band: [C_rev%(1000) − 0.025, C_rev%(1000) + 0.025] ≈ [7.5%, 12.5%]
+- Cutoff ranges: k_add ≈ 1251–1545, k_del ≈ 738–823
+- Verified against footnote 5: stock ranked 1210 in 2007 at C_rev%≈8% stays in R1000 (band ≈ 7.5%) ✓
 - The function `compute_banding_cutoffs()` in `auxiliary/data_processing.py` handles this
 
 ### Fuzzy RD Specification
@@ -35,7 +111,7 @@ Starting with the 2007 reconstitution, Russell implemented a banding policy:
 ```
 D_it = α_0l + α_1l(r_it - c) + τ_it[α_0r + α_1r(r_it - c)] + ε_it
 ```
-- D_it = actual Russell 2000 membership indicator
+- D_it = actual Russell 2000 membership indicator (we set D = τ)
 - r_it = end-of-May market cap rank
 - c = cutoff (1000 pre-banding, varies post-banding)
 - τ_it = instrument: indicator for predicted rank > cutoff
@@ -51,7 +127,7 @@ Y_it = β_0l + β_1l(r_it - c) + D_it[β_0r + β_1r(r_it - c)] + ν_it
 ```
 Y_it = β_0l + β_1l(r_it - c) + β_2l*t + D_it[β_0r + β_1r(r_it - c) + β_2r*t] + ν_it
 ```
-- t = years since 1996
+- t = years since base_year (1996 for replication, 2015 for extension)
 - β_2r = how the treatment effect changes over time
 
 ### Bandwidth
@@ -60,8 +136,8 @@ Y_it = β_0l + β_1l(r_it - c) + β_2l*t + D_it[β_0r + β_1r(r_it - c) + β_2r*
 - Local linear regression on each side of the cutoff
 
 ### Two Separate Samples
-- **Addition effect**: Stocks in Russell 1000 in year t-1 that are near the cutoff in year t. Comparing those that just crossed into Russell 2000 vs. those that just missed.
-- **Deletion effect**: Stocks in Russell 2000 in year t-1 that are near the cutoff in year t. Comparing those that stayed in Russell 2000 vs. those that moved to Russell 1000.
+- **Addition effect**: Stocks in Russell 1000 in year t-1 (prev_rank ≤ 1000) that are near the cutoff in year t. Comparing those that crossed into Russell 2000 (τ=1) vs. those that just missed (τ=0).
+- **Deletion effect**: Stocks in Russell 2000 in year t-1 (prev_rank > 1000) that are near the cutoff in year t. Comparing those that stayed in Russell 2000 (τ=1) vs. those that moved to Russell 1000 (τ=0).
 
 ## Data
 
@@ -112,11 +188,15 @@ This is the most critical data processing step. Follow this procedure for each y
 | Deletion (pre-banding) | 0.705 | 29.15 | 0.817 | 1,799 |
 | Deletion (post-banding) | 0.759 | 20.90 | 0.878 | 815 |
 
+Note: Our first stage will show α_0r ≈ 1.0 and F → ∞ because D = τ (no actual Russell lists). This is expected.
+
 ### Table 4: Returns Fuzzy RD
 | Effect | May | June | July | Aug | Sep |
 |--------|-----|------|------|-----|-----|
 | Addition | -0.003 | **0.050** (t=2.65) | -0.003 | 0.035 | 0.008 |
 | Deletion | 0.005 | **0.054** (t=3.00) | -0.019 | -0.002 | 0.025 |
+
+Note: Our ITT estimates will be attenuated by factor ~0.785 relative to the paper's LATE, plus additional attenuation from rank reconstruction noise (~25-30% misclassification near cutoff).
 
 ### Table 5: Volume Ratio and IO
 | Effect | VR June | IO |
@@ -135,10 +215,10 @@ No significant discontinuities in: Mktcap, Repurchase, ROE, ROA, EPS, Assets, IC
 ## Variable Definitions (Paper Section 3)
 
 - **Returns**: raw monthly stock return (RET from CRSP)
-- **VR (Volume Ratio)**: VR_it = (V_it / V̄_i) / (V_mt / V̄_m), where V̄ is 6-month trailing average volume, excluding month t. NASDAQ volume adjusted using Gao and Ritter (2010) procedure.
-- **SR (Short Ratio)**: shares shorted / shares outstanding
+- **VR (Volume Ratio)**: VR_it = (V_it / V̄_i) / (V_mt / V̄_m), where V̄ is 6-month trailing average volume, excluding month t. NASDAQ volume adjusted using Gao and Ritter (2010) procedure (halve pre-2004).
+- **SR (Short Ratio)**: shares shorted / shares outstanding (not yet pulled)
 - **Comovement**: beta from regressing daily stock returns on Russell 2000 index daily returns within each month
-- **IO**: institutional ownership from 13F filings (quarterly)
+- **IO**: institutional ownership from 13F filings (quarterly, not yet pulled)
 - **ROE**: return on equity = NI / CEQ
 - **ROA**: return on assets = NI / AT
 - **EPS**: earnings per share excluding extraordinary items (EPSPX)
@@ -153,30 +233,18 @@ No significant discontinuities in: Mktcap, Repurchase, ROE, ROA, EPS, Assets, IC
 ```
 ├── auxiliary/              # Helper functions
 │   ├── __init__.py
-│   ├── data_processing.py  # Data loading, merging, ranking construction
-│   ├── estimation.py       # Fuzzy RD estimation, time trends
-│   └── plotting.py         # RD plots, binned scatter plots
+│   ├── data_processing.py  # Data loading, merging, ranking, banding, VR, validity
+│   ├── estimation.py       # Fuzzy RD 2SLS, time trends
+│   └── plotting.py         # RD plots, binned scatter, time trend plots
 ├── data/                   # Raw data files (gitignored)
 ├── files/                  # Output figures and tables
+├── memory/                 # MEMORY.md — persistent notes across sessions
 ├── tests/                  # Unit tests
 ├── project.ipynb           # Main notebook — all analysis here
+├── CLAUDE.md               # This file — project guidance for Claude Code
 ├── environment.yml         # Conda environment
 └── pyproject.toml          # Project config
 ```
-
-## Implementation Order
-
-1. Load all datasets (Section 2 of notebook)
-2. Merge CRSP and Compustat via CCM link
-3. Construct end-of-May market cap rankings for each year 1996–2024
-4. Identify addition and deletion samples using prior-year membership
-5. Construct outcome variables (returns, VR, comovement)
-6. Run first-stage regressions (Table 3)
-7. Run fuzzy RD for returns (Table 4) and plot Figure 4
-8. Run fuzzy RD for VR and IO (Table 5)
-9. Run validity tests (Table 6)
-10. Run time trend regressions (Tables 7–8) and plot Figure 5
-11. Extension: compare 1996–2012 vs 2015–2024 results
 
 ## Style Guidelines
 

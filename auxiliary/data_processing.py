@@ -378,23 +378,24 @@ def compute_banding_cutoffs(rankings_df, year):
 
     Starting with the 2007 reconstitution, Russell implemented a banding
     policy to reduce unnecessary index turnover.  A stock only switches
-    indexes if its cumulative market cap position deviates by more than 2.5%
-    from C(1000), the cumulative market cap of the top 1000 stocks.
+    indexes if its *reverse cumulative market cap percentage* deviates by
+    more than 2.5 percentage points from that of the 1000th-ranked stock.
 
-    Let C(k) = Σ_{i=1}^{k} mktcap_i (sorted descending by market cap).
+    Define C_rev%(k) = Σ_{i=k}^{N} mktcap_i / total_R3000E, i.e., the
+    fraction of total Russell 3000E market cap held by stocks ranked k
+    through N (bottom-up cumulation).  Typically C_rev%(1000) ≈ 9–10%.
 
-    - Addition cutoff (k_add > 1000): smallest rank above 1000 where
-      C(k_add) ≥ 1.025 × C(1000).  An incumbent R1000 member whose rank
-      falls to k > k_add actually switches to R2000; those ranked
-      1001 ≤ k ≤ k_add are protected by the band and stay in R1000.
+    Per footnote 5 of Chang et al. (2015):
+    - A R1000 incumbent at rank k > 1000 switches to R2000 only if
+      C_rev%(k) < C_rev%(1000) − 0.025  (i.e., below ~7.5%)
+    - A R2000 incumbent at rank k < 1000 switches to R1000 only if
+      C_rev%(k) > C_rev%(1000) + 0.025  (i.e., above ~12.5%)
 
-    - Deletion cutoff (k_del < 1000): largest rank below 1000 where
-      C(k_del) ≤ 0.975 × C(1000).  An incumbent R2000 member whose rank
-      rises to k ≤ k_del actually switches to R1000; those ranked
-      k_del < k ≤ 1000 are protected and stay in R2000.
+    Addition cutoff (k_add): last rank > 1000 where C_rev% is still
+    within the band; k_add + 1 is the first rank that actually switches.
 
-    Typical range: k_add ≈ 1030–1060, k_del ≈ 940–970 (depends on the
-    market-cap distribution near rank 1000 each year).
+    Deletion cutoff (k_del): first rank < 1000 where C_rev% is still
+    within the band; k_del - 1 is the last rank that actually switches.
 
     Parameters
     ----------
@@ -412,28 +413,37 @@ def compute_banding_cutoffs(rankings_df, year):
         1000 stocks are in the universe (degenerate fallback).
     """
     df = rankings_df.sort_values("rank").copy()
-    # C(k): cumulative market cap of the top k stocks
-    df["cum_mktcap"] = df["market_cap"].cumsum()
 
-    # C(1000) — the reference threshold
-    c_1000 = float(df.loc[df["rank"] <= 1000, "market_cap"].sum())
-    if c_1000 <= 0 or not (df["rank"] >= 1000).any():
+    if not (df["rank"] == 1000).any():
         return 1000, 1000  # degenerate: not enough stocks
 
-    # Addition cutoff: first rank > 1000 where C(k) ≥ 1.025 × C(1000)
+    total_mktcap = df["market_cap"].sum()
+    if total_mktcap <= 0:
+        return 1000, 1000
+
+    # Reverse cumulation: sum market caps from rank k to N (bottom-up)
+    df_rev = df.sort_values("rank", ascending=False)
+    df_rev["cum_mktcap_rev"] = df_rev["market_cap"].cumsum()
+    df["cum_pct_rev"] = df_rev.set_index("rank")["cum_mktcap_rev"].reindex(df["rank"].values).values / total_mktcap
+
+    c_rev_1000 = float(df.loc[df["rank"] == 1000, "cum_pct_rev"].iloc[0])
+
+    # Addition cutoff: last rank > 1000 still within the band
+    # (C_rev%(k) >= C_rev%(1000) - 0.025 means protected)
     above = df[df["rank"] > 1000]
-    add_cands = above[above["cum_mktcap"] >= 1.025 * c_1000]
+    protected = above[above["cum_pct_rev"] >= c_rev_1000 - 0.025]
     addition_cutoff = (
-        int(add_cands["rank"].iloc[0]) if len(add_cands) > 0
-        else int(above["rank"].max())
+        int(protected["rank"].max()) + 1 if len(protected) > 0
+        else 1001
     )
 
-    # Deletion cutoff: last rank < 1000 where C(k) ≤ 0.975 × C(1000)
+    # Deletion cutoff: first rank < 1000 still within the band
+    # (C_rev%(k) <= C_rev%(1000) + 0.025 means protected)
     below = df[df["rank"] < 1000]
-    del_cands = below[below["cum_mktcap"] <= 0.975 * c_1000]
+    protected_del = below[below["cum_pct_rev"] <= c_rev_1000 + 0.025]
     deletion_cutoff = (
-        int(del_cands["rank"].iloc[-1]) if len(del_cands) > 0
-        else 1
+        int(protected_del["rank"].min()) - 1 if len(protected_del) > 0
+        else 999
     )
 
     return addition_cutoff, deletion_cutoff
