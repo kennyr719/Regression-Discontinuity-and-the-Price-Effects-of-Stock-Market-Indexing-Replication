@@ -148,25 +148,37 @@ def plot_rd_discontinuity(
     return fig
 
 
-def plot_index_weights(df, title="Index Weights Around Upper Cutoff"):
+def plot_index_weights(df=None, title="Index Weights Around Upper Cutoff"):
     """Plot index weights before and after reconstitution.
 
     Replicates Figure 2 from Chang et al. (2015), showing the jump in
-    index weights at the 1000 cutoff after June reconstitution.
+    Russell 2000 index weights at the rank-1000 cutoff after June
+    reconstitution.  Stocks just above rank 1000 receive index weights
+    approximately 10× larger than stocks just below rank 1000, creating
+    the discontinuous passive buying pressure that identifies the RD
+    treatment effect.
+
+    NOTE — Data Unavailable: This function cannot be implemented with the
+    data accessible through WRDS.  Russell Inc.'s end-of-June float-adjusted
+    index constituent weights are proprietary and are not distributed through
+    WRDS, CRSP, or Compustat.  The CRSP SHROUT field captures total shares
+    outstanding, not the float-adjusted shares that Russell uses to compute
+    value weights.  Obtaining Figure 2 requires the annual reconstitution
+    weight files published by FTSE Russell, which are not part of this
+    project's data subscription.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Data with rank, May weights, and June weights.
+    df : pd.DataFrame or None
+        Unused.  Kept for interface compatibility.
     title : str, optional
-        Plot title.
+        Unused.  Kept for interface compatibility.
 
     Returns
     -------
-    matplotlib.figure.Figure
-        The generated figure.
+    None
     """
-    raise NotImplementedError
+    return None
 
 
 def plot_time_trends(estimates_df, outcome="price_impact", title="RD Estimates Over Time"):

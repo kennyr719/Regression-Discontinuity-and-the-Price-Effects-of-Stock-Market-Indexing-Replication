@@ -10,7 +10,9 @@ from auxiliary.data_processing import (
     merge_crsp_compustat,
 )
 from auxiliary.estimation import (
+    bandwidth_sensitivity,
     fuzzy_rd_estimate,
+    fuzzy_rd_time_trend,
     optimal_bandwidth,
 )
 from auxiliary.plotting import (

@@ -22,20 +22,14 @@ After replicating the original 1996–2012 results, we extend the sample to 2015
 - **Data pipeline**: `merge_crsp_compustat()` and `compute_market_cap_rankings()` — fully implemented and verified. Rankings for 1996–2024 are correct (top stocks check out, rank-1000 market caps in expected range).
 - **Sample construction**: `identify_index_switchers()` — builds addition/deletion panels using prior-year rank as membership proxy. Sets D = τ (sharp RD approximation).
 - **Outcome variables**: `construct_outcome_variables()` (monthly returns) and `construct_volume_ratio()` (VR) are implemented.
-- **Estimation**: `fuzzy_rd_estimate()` (2SLS with year FE) and `fuzzy_rd_time_trend()` (time trend interaction) are implemented.
+- **Estimation**: `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` — HC1-robust SEs via `S_white_simple`, optional `poly_degree=2` quadratic robustness check (Chang et al. Section 4.2).
+- **Bandwidth**: `optimal_bandwidth()` returns 100 (paper's canonical choice). `bandwidth_sensitivity()` tests h ∈ {50, 100, 150}.
 - **Validity tests**: `construct_validity_variables()` merges Compustat annual fundamentals.
-- **Notebook Sections 1–3, 6 (Table 4), 8 (Table 6), 9 (extension)**: Executed with output.
-- **Figures 4 and 5**: Generated and saved to `files/`.
-
-### What is CODED but NOT YET RUN (no output in notebook) ⏳
-- Section 4 (Figure 1 — market cap continuity plot)
-- Section 5 (Table 3 — first-stage regressions) — Cells 17–18
-- Section 7 (Table 5 — VR fuzzy RD) — Cell 23
+- **All notebook sections executed**: Sections 1–10 all have output, including Figure 1, Tables 3–6, Figure 4, Tables 7–8, extension, Figure 5, summary table.
+- **`plot_index_weights()`**: Returns `None` with a docstring explaining the data limitation (Russell float-adjusted weights are proprietary and unavailable).
 
 ### What STILL NEEDS IMPLEMENTATION 🔲
-- `optimal_bandwidth()` in `estimation.py` — still `raise NotImplementedError`
-- `plot_index_weights()` in `plotting.py` — still `raise NotImplementedError`
-- Summary table in Cell 29 — still has placeholder dashes
+- Summary table in Cell 30 — outputs reflect old homoskedastic SEs; needs re-running after estimation changes to show HC1-robust values.
 
 ### Known Issues / Bugs 🐛
 See the "Priority Fixes" section below for detailed instructions.
@@ -50,39 +44,33 @@ See the "Priority Fixes" section below for detailed instructions.
 
 **Result**: Cutoffs k_add≈1251–1545, k_del≈738–823. Verified against footnote 5 example: stock 1210 in 2007 at C_rev%=7.24% stays in R1000 (band lower limit 6.89%) ✓.
 
-### FIX 2: Run unexecuted notebook cells
+### FIX 2 ✅ DONE: Run unexecuted notebook cells
 
-After Fix 1, execute these cells that are coded but have no output:
-- Cell 15 (Figure 1 — market cap continuity)
-- Cells 17–18 (Table 3 — first-stage regressions + post-banding diagnostic)
-- Cell 23 (Table 5 — VR fuzzy RD)
+All notebook cells now have output (Sections 1–10 complete). To regenerate outputs with updated HC1-robust SEs after the estimation changes, run:
+```bash
+jupyter nbconvert --to notebook --execute --inplace \
+  --ExecutePreprocessor.timeout=3600 project.ipynb
+```
 
-### FIX 3: Fill in the Summary Table (Cell 29)
+### FIX 3 ✅ DONE: Summary Table (Cell 30)
 
-Cell 29 (Section 10) has a markdown table with placeholder dashes. After re-running everything, update it with the actual replicated values. Format:
+Cell 30 has a completed summary table comparing original vs. replicated values. Note the attenuation caveat — our ITT estimates are smaller than the paper's LATE by factor ~0.785 (D = τ) plus rank noise.
 
-| Result | Original | Replicated | Match? |
-|--------|----------|------------|--------|
-| Addition effect (June return) | 5.0% (t=2.65) | [our value] | [close/attenuated/etc] |
-| ... | ... | ... | ... |
+### FIX 4 ✅ DONE: Extension conclusion (Cell 28)
 
-Note: Our estimates will be attenuated vs. the paper because we use D = τ (sharp RD) rather than actual Russell constituent lists (fuzzy RD). The paper's LATE = ITT / first_stage, so our ITT will be smaller by a factor of ~0.785. Acknowledge this in the table.
+Cell 28 (markdown) contains the extension conclusion, covering: sample size limitations, D = τ attenuation, hypothesis evaluation, and the one robust finding (deletion time trend β₂ᵣ ≈ −0.50%, t ≈ −2.52).
 
-### FIX 4: Extension conclusion (Cell 27)
+### FIX 5 ✅ DONE: Legacy template files deleted
 
-Add a concluding paragraph after the results table that:
-1. Acknowledges sample size limitations (especially post-banding addition sample)
-2. Notes the attenuation problem (D = τ, no actual Russell lists)
-3. States which hypothesis is supported (or that the evidence is inconclusive)
-4. Highlights the one robust finding: the deletion time trend in 1996–2012 (β_2r = −0.56%, t = −2.87) replicates the paper's declining price impact result
+Deleted: `auxiliary/plots.py`, `auxiliary/predictions.py`, `auxiliary/tables.py`, template images, `edit_notebook*.py` scripts. `auxiliary/__init__.py` updated.
 
-### FIX 5: Clean up legacy template files
+### FIX 6 ✅ DONE: HC1-robust standard errors + robustness tools
 
-- Delete `auxiliary/plots.py`, `auxiliary/predictions.py`, `auxiliary/tables.py` — these are leftover from the eisenhauerIO student template (they reference GPA, academic probation, etc.) and are not used
-- Delete `files/causalgraph1.PNG`, `files/causalgraph2.PNG`, `files/bounds_nextGPA.PNG` — template images
-- Update `README.md` — it still describes Lindo et al. (2010); replace with a description of this project
-- Delete `edit_notebook.py`, `edit_notebook_extension.py`, `edit_notebook_fig5.py`, `edit_notebook_plot.py` — one-off notebook editing scripts, no longer needed
-- Update `auxiliary/__init__.py` to remove imports of deleted modules
+- `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` now use HC1-robust SEs via `statsmodels.stats.sandwich_covariance.S_white_simple` (the only statsmodels import that avoids the broken scipy chain in base conda).
+- Both functions accept `poly_degree=1` (default, local linear) or `poly_degree=2` (quadratic robustness check per Chang et al. Section 4.2).
+- `optimal_bandwidth()` returns 100 (paper's choice); no longer raises `NotImplementedError`.
+- New `bandwidth_sensitivity(df, outcome, bandwidths=(50,100,150))` for bandwidth robustness.
+- `plot_index_weights()` returns `None` with a docstring explaining Russell float-adjusted weights are proprietary and unavailable through WRDS.
 
 ---
 

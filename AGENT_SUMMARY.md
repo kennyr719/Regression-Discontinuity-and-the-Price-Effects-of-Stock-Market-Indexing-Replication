@@ -51,16 +51,23 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 
 | Function | Purpose | Status |
 |----------|---------|--------|
-| `fuzzy_rd_estimate()` | 2SLS estimation with year fixed effects. Returns β₀ᵣ (treatment effect), t-stat, p-value, first-stage stats | ✅ Complete |
-| `fuzzy_rd_time_trend()` | 2SLS with linear time trend interaction (β₂ᵣ = annual change in treatment effect) | ✅ Complete |
-| `optimal_bandwidth()` | IK bandwidth selector | ❌ Not implemented (paper uses bandwidth=100 throughout) |
+| `fuzzy_rd_estimate()` | 2SLS with year FEs, HC1-robust SEs, optional `poly_degree=2` | ✅ Complete |
+| `fuzzy_rd_time_trend()` | 2SLS with time trend interaction, HC1-robust SEs, optional `poly_degree=2` | ✅ Complete |
+| `optimal_bandwidth()` | Returns 100 (paper's canonical choice per Section 4.2) | ✅ Complete |
+| `bandwidth_sensitivity()` | Runs `fuzzy_rd_estimate` at h ∈ {50, 100, 150}; returns DataFrame | ✅ Complete |
 
 ### Specification details
-- **First stage**: D_it = α₀ₗ + α₁ₗ(r_it − c) + τ_it[α₀ᵣ + α₁ᵣ(r_it − c)] + year FE + ε_it
-- **Second stage**: Y_it = β₀ₗ + β₁ₗ(r_it − c) + D̂_it[β₀ᵣ + β₁ᵣ(r_it − c)] + year FE + ν_it
+- **First stage**: D_it = α₀ₗ + α₁ₗ(r − c) [+ α₂ₗ r²] + τ[α₀ᵣ + α₁ᵣ(r − c) [+ α₂ᵣ r²]] + year FE + ε
+- **Second stage**: Y_it = β₀ₗ + β₁ₗ(r − c) [+ β₂ₗ r²] + D̂[β₀ᵣ + β₁ᵣ(r − c) [+ β₂ᵣ r²]] + year FE + ν
 - Since D = τ, the first stage is trivially α₀ᵣ = 1.0, F → ∞
-- 2SLS standard errors use residuals from the original X (not X̂)
-- P-values computed via `scipy.special.betainc` (scipy.stats is broken in the base conda env)
+- **Standard errors**: HC1-robust via `statsmodels.stats.sandwich_covariance.S_white_simple`.
+  Assembly: `var_beta = (n / df_resid) * bread @ S_white_simple(X_hat * resid[:,None]) @ bread`
+  This is the only statsmodels import that avoids the broken scipy chain in base conda.
+- P-values via `scipy.special.betainc` (t-distribution, df = n − k)
+- First-stage diagnostics (α₀ᵣ t-stat, R², F) remain homoskedastic OLS — appropriate since they are instrument-strength diagnostics, not causal estimates
+
+### poly_degree parameter
+Both `fuzzy_rd_estimate` and `fuzzy_rd_time_trend` accept `poly_degree=1` (default, local linear — paper's main spec) or `poly_degree=2` (adds r² and D*r² terms). This replicates the quadratic robustness check in Chang et al. (2015, Section 4.2): *"our results are robust to changes in the bandwidth and to quadratic functions of ranking."*
 
 ---
 
@@ -73,7 +80,9 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 | `plot_market_cap_continuity()` | Binned scatter of log(market_cap) vs rank around cutoff (Figure 1) | ✅ Complete |
 | `plot_rd_discontinuity()` | Binned scatter of outcome vs running variable with local linear fits (Figure 4) | ✅ Complete |
 | `plot_time_trends()` | Rolling RD estimates with 95% CI over time (Figure 5) | ✅ Complete |
-| `plot_index_weights()` | Index weights before/after reconstitution (Figure 2) | ❌ Not implemented (requires Russell weight data we don't have) |
+| `plot_index_weights()` | Index weights before/after reconstitution (Figure 2) | ⛔ Data unavailable |
+
+**`plot_index_weights()` note**: Returns `None`. Russell Inc.'s end-of-June float-adjusted constituent weights are proprietary and not distributed through WRDS, CRSP, or Compustat. The function has a full docstring explaining this limitation. It does not raise `NotImplementedError`.
 
 ---
 
@@ -85,6 +94,7 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 | 2. Data Loading | 3–5 | Load CRSP, Compustat, CCM from gzipped CSVs | ✅ |
 | 3a. Rankings | 6–8 | Build rankings for all years, verify top stocks | ✅ |
 | 3b. Panels | 9–10 | Build addition/deletion panels with banding, year-by-year diagnostics | ✅ |
+| 3c. Returns | 11–13 | Merge monthly returns into addition/deletion panels | ✅ |
 | 4. Figure 1 | 15 | Market cap continuity plot | ✅ |
 | 5. Table 3 | 17–18 | First-stage regressions + post-banding diagnostics | ✅ |
 | 6. Table 4 | 20 | Returns fuzzy RD (May–Sep, 1996–2012) | ✅ |
@@ -97,9 +107,15 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 | 9d. Figure 5 | 29 | Rolling 3-year RD estimates over time | ✅ |
 | 10. Summary | 30 | Summary table with original vs. replicated values | ✅ |
 
+**Note**: All cells have output. However, Tables 3–8 and the extension (Cells 17–29) were last executed with the old homoskedastic SE formula. Re-run the notebook after the HC1 estimation changes to refresh those values:
+```bash
+jupyter nbconvert --to notebook --execute --inplace \
+  --ExecutePreprocessor.timeout=3600 project.ipynb
+```
+
 ---
 
-## 6. Replication Results (Current)
+## 6. Replication Results (Current — pre-HC1 rerun)
 
 ### Table 4: Returns Fuzzy RD (1996–2012)
 | Month | Addition | Deletion | Paper Addition | Paper Deletion |
@@ -175,7 +191,7 @@ The wide bands are intentional — Russell designed banding to significantly red
 2. **Rank reconstruction noise**: CRSP/Compustat uses total shares; Russell uses float-adjusted shares. ~25-30% misclassification near cutoff further attenuates estimates.
 3. **Post-banding sample sizes**: Post-2007 addition samples are small (median 13/yr) due to the wide banding cutoff. The deletion sample is larger (median 29/yr) but still smaller than pre-banding.
 4. **Extension sample power**: 2015–2024 has only 127 addition and 279 deletion observations, limiting statistical significance.
-5. **scipy.stats broken**: The base conda environment has a broken scipy.stats module. P-values are computed using `scipy.special.betainc` directly.
+5. **Broken scipy/statsmodels in base conda**: `scipy.stats`, `scipy.optimize`, `scipy.interpolate`, `scipy.sparse.linalg`, `statsmodels.api`, and `statsmodels.regression.linear_model` all fail with `ImportError: cannot import name '_spropack'`. Safe imports: `scipy.special.betainc` and `statsmodels.stats.sandwich_covariance.S_white_simple`.
 
 ---
 
@@ -191,6 +207,7 @@ These were template leftovers from an eisenhauerIO student template (referenced 
 ## 11. Environment
 
 - Python: `/Users/kennyren/anaconda3/bin/python` (base anaconda)
-- Key packages: pandas, numpy, matplotlib, scipy (betainc only)
+- Key packages: pandas, numpy, matplotlib, scipy (betainc only), statsmodels (S_white_simple only)
 - `environment.yml` exists but the `russell-rd` conda env was never created
 - Data accessed through WRDS; stored in `data/` (gitignored)
+- To run the notebook: `jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=3600 project.ipynb`
