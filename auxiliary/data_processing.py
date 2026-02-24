@@ -149,13 +149,32 @@ def compute_market_cap_rankings(data, year):
         & crsp_monthly["EXCHCD"].isin([1, 2, 3])
         & (crsp_monthly["PRC"] >= 1.0)
     ].copy()
+    # CRSP occasionally has duplicate rows for the same PERMNO in a month
+    # (e.g., data entry errors or corporate action timing).  Keep the row
+    # with the highest absolute price to prefer the most liquid record.
+    may_crsp = (
+        may_crsp
+        .sort_values("PRC", ascending=False)
+        .drop_duplicates("PERMNO", keep="first")
+    )
 
     # ------------------------------------------------------------------
     # Step 2: Attach GVKEY via CCM links active on the reconstitution date
     # ------------------------------------------------------------------
+    # A PERMNO can have multiple active CCM links on the same date (e.g.,
+    # when a company is involved in a merger and both old and new GVKEYs
+    # have overlapping link intervals).  Keep at most one GVKEY per PERMNO
+    # by preferring LINKPRIM='P' (primary link) over 'C' (calendar link).
     active_links = ccm_link[
         (ccm_link["LINKDT"] <= may_cutoff) & (ccm_link["LINKENDDT"] >= may_cutoff)
-    ][["LPERMNO", "gvkey"]].rename(columns={"LPERMNO": "PERMNO"})
+    ][["LPERMNO", "gvkey", "LINKPRIM"]].rename(columns={"LPERMNO": "PERMNO"})
+
+    active_links = (
+        active_links
+        .sort_values("LINKPRIM", key=lambda s: s.map({"P": 0, "C": 1}))
+        .drop_duplicates("PERMNO", keep="first")
+        .drop(columns=["LINKPRIM"])
+    )
 
     may_crsp = may_crsp.merge(active_links, on="PERMNO", how="left")
 
@@ -179,7 +198,20 @@ def compute_market_cap_rankings(data, year):
 
     # ------------------------------------------------------------------
     # Step 4: Adjust Compustat shares for splits/distributions
-    #   adjusted_cshoq = cshoq_millions × 1000 × (CFACSHR_may / CFACSHR_qtr_end)
+    #
+    # CRSP CFACSHR convention: split-adjusted shares = SHROUT × CFACSHR.
+    # The factor is set so that SHROUT × CFACSHR is constant through splits
+    # (e.g., a 2:1 forward split doubles SHROUT and halves CFACSHR; a 10:1
+    # reverse split reduces SHROUT by 10× and multiplies CFACSHR by 10).
+    #
+    # To express Compustat CSHOQ (as of fiscal quarter end) on the same
+    # share-count basis as May 31 CRSP SHROUT:
+    #
+    #   compustat_shares_may = CSHOQ_qtr × (CFACSHR_qtr / CFACSHR_may) × 1000
+    #
+    # This is the ratio CFACSHR_qtr / CFACSHR_may (NOT may/qtr).  Using the
+    # inverted ratio would inflate shares by the square of the split factor
+    # for reverse splits (e.g., ×100 instead of ×0.1 for a 10:1 reverse).
     # ------------------------------------------------------------------
     # Build year-month integer key for the fiscal quarter-end
     has_qtr = may_crsp["qtr_end_date"].notna()
@@ -198,10 +230,11 @@ def compute_market_cap_rankings(data, year):
         how="left",
     )
 
-    # Split-adjustment ratio; default to 1.0 when lookup fails
+    # Split-adjustment ratio: CFACSHR_qtr / CFACSHR_may
+    # Default to 1.0 when either factor is missing or zero.
     cfacshr_may = may_crsp["CFACSHR"].replace(0, np.nan)
     cfacshr_qtr = may_crsp["cfacshr_qtr"].replace(0, np.nan)
-    split_adj = (cfacshr_may / cfacshr_qtr).fillna(1.0)
+    split_adj = (cfacshr_qtr / cfacshr_may).fillna(1.0)
 
     # Compustat shares in thousands (CSHOQ is in millions)
     compustat_shares_thou = may_crsp["cshoq_millions"] * 1000 * split_adj
@@ -236,76 +269,440 @@ def compute_market_cap_rankings(data, year):
     return ranked[out_cols].sort_values("rank").reset_index(drop=True)
 
 
-def identify_index_switchers(rankings_df, constituents_df, year, cutoff=1000):
-    """Identify firms that switch between Russell 1000 and Russell 2000.
+def identify_index_switchers(
+    all_rankings, year, cutoff=1000, bandwidth=100,
+    addition_cutoff=None, deletion_cutoff=None,
+):
+    """Identify firms switching between Russell 1000 and Russell 2000.
 
-    Separates the addition effect sample (Russell 1000 firms in year t-1
-    that cross below the cutoff in year t) from the deletion effect sample
-    (Russell 2000 firms in year t-1 that cross above the cutoff in year t).
+    Separates stocks near the rank cutoff in year t into two samples based
+    on their prior-year (t-1) index membership (proxied by reconstructed
+    rankings, since actual Russell constituent lists are unavailable):
+
+    - Addition sample: stocks ranked ≤ cutoff in year t-1 (in Russell 1000)
+      and within [addition_cutoff-bandwidth, addition_cutoff+bandwidth] in
+      year t.  Those with rank > addition_cutoff crossed into Russell 2000.
+
+    - Deletion sample: stocks ranked > cutoff in year t-1 (in Russell 2000)
+      and within [deletion_cutoff-bandwidth, deletion_cutoff+bandwidth] in
+      year t.  Those with rank ≤ deletion_cutoff crossed into Russell 1000.
+
+    Pre-banding (≤ 2006): addition_cutoff = deletion_cutoff = cutoff = 1000.
+    Post-banding (≥ 2007): pass banding-adjusted cutoffs from
+    compute_banding_cutoffs(); addition_cutoff > 1000, deletion_cutoff < 1000.
+
+    Because actual Russell constituent lists are not available, prior-year
+    index membership is proxied by prior-year reconstructed rankings, and
+    current-year actual membership (D) is set equal to the rank-based
+    instrument (τ). This yields a reduced-form / sharp-RD estimator; the
+    true fuzzy-RD LATE would scale by the inverse first-stage coefficient.
 
     Parameters
     ----------
-    rankings_df : pd.DataFrame
-        End-of-May market cap rankings for year t.
-    constituents_df : pd.DataFrame
-        Russell 1000/2000 constituent lists for year t-1.
+    all_rankings : dict
+        Mapping {year: pd.DataFrame} from compute_market_cap_rankings().
+        Must contain entries for both `year` and `year - 1`.
     year : int
-        Reconstitution year.
+        Reconstitution year t.
     cutoff : int, optional
-        Rank cutoff between Russell 1000 and 2000 (default: 1000).
+        Nominal rank cutoff for prior-year membership (always 1000).
+    bandwidth : int, optional
+        Number of ranks on each side of the effective cutoff (default: 100).
+    addition_cutoff : int, optional
+        Effective rank cutoff for the addition sample.  If None, defaults to
+        `cutoff`.  Post-2007: compute via compute_banding_cutoffs().
+    deletion_cutoff : int, optional
+        Effective rank cutoff for the deletion sample.  If None, defaults to
+        `cutoff`.  Post-2007: compute via compute_banding_cutoffs().
 
     Returns
     -------
     tuple[pd.DataFrame, pd.DataFrame]
-        (addition_sample, deletion_sample) within the specified bandwidth.
+        (addition_sample, deletion_sample).  Each DataFrame contains:
+        PERMNO, gvkey, date, PRC, SHROUT, shares, market_cap, rank,
+        rank_centered, tau, D, prev_rank, year.
+        Returns (None, None) if prior-year rankings are unavailable.
     """
-    raise NotImplementedError
+    if year - 1 not in all_rankings:
+        return None, None
+
+    _add_c = addition_cutoff if addition_cutoff is not None else cutoff
+    _del_c = deletion_cutoff if deletion_cutoff is not None else cutoff
+
+    curr = all_rankings[year]
+    prev = all_rankings[year - 1]
+
+    # Prior-year rank: one row per PERMNO, lowest rank number (= largest firm)
+    prev_rank = (
+        prev.groupby("PERMNO", sort=False)["rank"]
+        .min()
+        .reset_index()
+        .rename(columns={"rank": "prev_rank"})
+    )
+
+    # Inner join: keep only stocks present in both years
+    merged = curr.merge(prev_rank, on="PERMNO", how="inner")
+    merged["year"] = year
+
+    # ── Addition sample ──────────────────────────────────────────────────────
+    # Stocks that were in Russell 1000 (prev_rank ≤ cutoff) and are now
+    # within bandwidth of the addition cutoff.
+    # τ = 1 if rank > _add_c (predicted to cross into R2000).
+    add_bw = (
+        (merged["rank"] >= _add_c - bandwidth)
+        & (merged["rank"] <= _add_c + bandwidth)
+    )
+    addition = merged[add_bw & (merged["prev_rank"] <= cutoff)].copy()
+    addition["rank_centered"] = addition["rank"] - _add_c
+    addition["tau"] = (addition["rank"] > _add_c).astype(int)
+    addition["D"] = addition["tau"]
+
+    # ── Deletion sample ──────────────────────────────────────────────────────
+    # Stocks that were in Russell 2000 (prev_rank > cutoff) and are now
+    # within bandwidth of the deletion cutoff.
+    # τ = 1 if rank > _del_c (predicted to stay in R2000).
+    del_bw = (
+        (merged["rank"] >= _del_c - bandwidth)
+        & (merged["rank"] <= _del_c + bandwidth)
+    )
+    deletion = merged[del_bw & (merged["prev_rank"] > cutoff)].copy()
+    deletion["rank_centered"] = deletion["rank"] - _del_c
+    deletion["tau"] = (deletion["rank"] > _del_c).astype(int)
+    deletion["D"] = deletion["tau"]
+
+    return addition, deletion
 
 
 def compute_banding_cutoffs(rankings_df, year):
     """Compute banding-adjusted cutoffs for post-2007 reconstitutions.
 
-    After 2007, Russell implemented a banding policy where firms only switch
-    indexes if their cumulative market capitalization deviates more than 2.5%
-    from the 1000th stock's cumulative market capitalization in the Russell
-    3000E.
+    Starting with the 2007 reconstitution, Russell implemented a banding
+    policy to reduce unnecessary index turnover.  A stock only switches
+    indexes if its cumulative market cap position deviates by more than 2.5%
+    from C(1000), the cumulative market cap of the top 1000 stocks.
+
+    Let C(k) = Σ_{i=1}^{k} mktcap_i (sorted descending by market cap).
+
+    - Addition cutoff (k_add > 1000): smallest rank above 1000 where
+      C(k_add) ≥ 1.025 × C(1000).  An incumbent R1000 member whose rank
+      falls to k > k_add actually switches to R2000; those ranked
+      1001 ≤ k ≤ k_add are protected by the band and stay in R1000.
+
+    - Deletion cutoff (k_del < 1000): largest rank below 1000 where
+      C(k_del) ≤ 0.975 × C(1000).  An incumbent R2000 member whose rank
+      rises to k ≤ k_del actually switches to R1000; those ranked
+      k_del < k ≤ 1000 are protected and stay in R2000.
+
+    Typical range: k_add ≈ 1030–1060, k_del ≈ 940–970 (depends on the
+    market-cap distribution near rank 1000 each year).
 
     Parameters
     ----------
     rankings_df : pd.DataFrame
-        End-of-May rankings including cumulative market cap percentiles.
+        End-of-May rankings from compute_market_cap_rankings().  Must
+        include 'rank' (int, 1 = largest market cap) and 'market_cap'
+        (float, millions USD) columns.
     year : int
-        Reconstitution year.
+        Reconstitution year (informational; banding applies for year ≥ 2007).
 
     Returns
     -------
     tuple[int, int]
-        (addition_cutoff, deletion_cutoff) adjusted for banding.
+        (addition_cutoff, deletion_cutoff).  Both equal 1000 if fewer than
+        1000 stocks are in the universe (degenerate fallback).
     """
-    raise NotImplementedError
+    df = rankings_df.sort_values("rank").copy()
+    # C(k): cumulative market cap of the top k stocks
+    df["cum_mktcap"] = df["market_cap"].cumsum()
+
+    # C(1000) — the reference threshold
+    c_1000 = float(df.loc[df["rank"] <= 1000, "market_cap"].sum())
+    if c_1000 <= 0 or not (df["rank"] >= 1000).any():
+        return 1000, 1000  # degenerate: not enough stocks
+
+    # Addition cutoff: first rank > 1000 where C(k) ≥ 1.025 × C(1000)
+    above = df[df["rank"] > 1000]
+    add_cands = above[above["cum_mktcap"] >= 1.025 * c_1000]
+    addition_cutoff = (
+        int(add_cands["rank"].iloc[0]) if len(add_cands) > 0
+        else int(above["rank"].max())
+    )
+
+    # Deletion cutoff: last rank < 1000 where C(k) ≤ 0.975 × C(1000)
+    below = df[df["rank"] < 1000]
+    del_cands = below[below["cum_mktcap"] <= 0.975 * c_1000]
+    deletion_cutoff = (
+        int(del_cands["rank"].iloc[-1]) if len(del_cands) > 0
+        else 1
+    )
+
+    return addition_cutoff, deletion_cutoff
 
 
-def construct_outcome_variables(crsp_daily, crsp_monthly, year):
-    """Construct dependent variables for the RD regressions.
+def construct_validity_variables(compustat_annual, addition_df, deletion_df):
+    """Attach prior-year Compustat annual fundamentals to addition/deletion panels.
 
-    Variables constructed:
-    - Returns: raw monthly stock returns (May through September)
-    - VR: volume ratio relative to 6-month trailing average
-    - SR: short interest ratio (shares shorted / shares outstanding)
-    - Comovement: monthly beta with Russell 2000 index daily returns
+    For each firm-year (reconstitution year t) in the panels, finds the most
+    recent annual Compustat observation whose fiscal year ended before May 31
+    of year t and whose 10-K filing was estimated to be available by May 31.
+
+    Filing deadline (estimated as days after fiscal year end):
+      - fyear < 2003: 90 days
+      - 2003 ≤ fyear ≤ 2005: 75 days
+      - fyear > 2005: 60 days
+
+    Computed variables (paper Table 6):
+      roe       : NI / CEQ (NaN if CEQ ≤ 0)
+      roa       : NI / AT  (NaN if AT ≤ 0)
+      eps       : EPSPX (earnings per share excl. extraordinary items)
+      assets    : AT (total assets, millions USD)
+      icr       : OIBDP / XINT (NaN if XINT ≤ 0)
+      ca        : CHE / AT (NaN if AT ≤ 0)
+      repurchase: 1 if PRSTKC > 0, else 0
+
+    Market cap (already in both panels as 'market_cap') is tested separately
+    in the notebook; it does not require a Compustat merge.
 
     Parameters
     ----------
-    crsp_daily : pd.DataFrame
-        CRSP daily stock data.
-    crsp_monthly : pd.DataFrame
-        CRSP monthly stock data.
+    compustat_annual : pd.DataFrame
+        Raw Compustat annual data with columns: gvkey, datadate, at, ceq,
+        che, epspx, ni, oibdp, xint, prstkc.  Additional format filter
+        columns (datafmt, indfmt, consol, curcd) are applied if present.
+    addition_df : pd.DataFrame
+        Addition panel (output of identify_index_switchers() merged with
+        returns).  Must contain 'gvkey' and 'year'.
+    deletion_df : pd.DataFrame
+        Deletion panel (same structure as addition_df).
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        (addition_validity, deletion_validity): each panel with validity
+        columns appended.  Firms without a Compustat annual match keep their
+        row but get NaN for all validity columns.
+    """
+    VALIDITY_VARS = ["roe", "roa", "eps", "assets", "icr", "ca", "repurchase"]
+
+    # ── Prepare annual data ───────────────────────────────────────────────
+    ca = compustat_annual.copy()
+
+    # Apply standard Compustat format filters when columns are present
+    for col, val in [
+        ("datafmt", "STD"),
+        ("indfmt", "INDL"),
+        ("consol", "C"),
+        ("curcd", "USD"),
+    ]:
+        if col in ca.columns:
+            ca = ca[ca[col] == val]
+
+    ca["datadate"] = pd.to_datetime(ca["datadate"])
+
+    # Estimated 10-K filing deadline: depends on fiscal year
+    fy = ca["datadate"].dt.year
+    deadline_days = np.where(fy < 2003, 90, np.where(fy <= 2005, 75, 60))
+    ca["available_date"] = ca["datadate"] + pd.to_timedelta(deadline_days, unit="D")
+
+    # ── Compute derived validity variables ────────────────────────────────
+    at   = ca["at"].where(ca["at"].fillna(0) > 0)    # AT > 0 required for denominator
+    ceq  = ca["ceq"].where(ca["ceq"].fillna(0) > 0)  # CEQ > 0 for ROE
+    xint = ca["xint"].where(ca["xint"].fillna(0) > 0)
+
+    ca["roe"]       = ca["ni"] / ceq
+    ca["roa"]       = ca["ni"] / at
+    ca["eps"]       = ca["epspx"]
+    ca["assets"]    = ca["at"]
+    ca["icr"]       = ca["oibdp"] / xint
+    ca["ca"]        = ca["che"] / at
+    ca["repurchase"] = (ca["prstkc"].fillna(0) > 0).astype(int)
+
+    keep = ["gvkey", "datadate", "available_date"] + VALIDITY_VARS
+    ca = ca[keep].dropna(subset=["gvkey"])
+
+    # ── For each reconstitution year, get most recent annual obs per gvkey ─
+    all_years = sorted(set(addition_df["year"]) | set(deletion_df["year"]))
+    validity_by_year = {}
+    for year in all_years:
+        may31 = pd.Timestamp(f"{year}-05-31")
+        avail = ca[(ca["datadate"] < may31) & (ca["available_date"] < may31)]
+        if len(avail) == 0:
+            validity_by_year[year] = pd.DataFrame(columns=["gvkey"] + VALIDITY_VARS)
+            continue
+        latest_idx = avail.groupby("gvkey")["datadate"].idxmax()
+        latest = (
+            avail.loc[latest_idx]
+            .drop(columns=["datadate", "available_date"])
+            .copy()
+        )
+        validity_by_year[year] = latest
+
+    # ── Merge into each panel ─────────────────────────────────────────────
+    def _merge_validity(panel):
+        parts = []
+        for year, sub in panel.groupby("year", sort=True):
+            vdf = validity_by_year.get(year, pd.DataFrame(columns=["gvkey"]))
+            parts.append(sub.merge(vdf, on="gvkey", how="left"))
+        return pd.concat(parts, ignore_index=True)
+
+    return _merge_validity(addition_df), _merge_validity(deletion_df)
+
+
+def construct_volume_ratio(data, year, months=(5, 6, 7, 8, 9)):
+    """Construct monthly volume ratio (VR) for the fuzzy RD regressions.
+
+    VR_it = (V_it / V̄_i) / (V_mt / V̄_m)
+
+    where:
+      V_it  = stock i's adjusted volume in month t
+      V̄_i  = mean of stock i's adjusted volume over the 6 months before t
+      V_mt  = aggregate market volume (sum over eligible stocks) in month t
+      V̄_m  = mean of V_ms over the 6 months before t
+
+    NASDAQ volume is halved pre-2004 to correct for double-counting of
+    dealer trades (Gao & Ritter, 2010).  Uses CRSP monthly VOL — daily
+    data is not required.  Stocks with zero trailing average volume are
+    excluded (VR undefined).
+
+    Parameters
+    ----------
+    data : dict
+        Cleaned data dict from merge_crsp_compustat(), with 'crsp_monthly'.
+        Must contain VOL, EXCHCD, SHRCD columns.
     year : int
         Reconstitution year.
+    months : tuple of int, optional
+        Calendar months to compute VR for (default: May–September).
 
     Returns
     -------
     pd.DataFrame
-        Panel of outcome variables by firm-month.
+        Wide-format: PERMNO, year, vr_may, vr_jun, vr_jul, vr_aug, vr_sep.
+        NaN where VR is undefined (no trailing volume or delisted).
     """
-    raise NotImplementedError
+    crsp_m = data["crsp_monthly"].copy()
+    crsp_m["yr"] = crsp_m["date"].dt.year
+    crsp_m["mo"] = crsp_m["date"].dt.month
+    crsp_m["VOL"] = pd.to_numeric(crsp_m["VOL"], errors="coerce").fillna(0.0)
+
+    # NASDAQ adjustment (Gao & Ritter 2010): halve volume pre-2004
+    crsp_m["vol_adj"] = np.where(
+        (crsp_m["EXCHCD"] == 3) & (crsp_m["yr"] < 2004),
+        crsp_m["VOL"] / 2.0,
+        crsp_m["VOL"],
+    )
+
+    # Restrict to eligible U.S. common stocks on NYSE/AMEX/NASDAQ
+    eligible = crsp_m[
+        crsp_m["SHRCD"].isin([10, 11]) & crsp_m["EXCHCD"].isin([1, 2, 3])
+    ].copy()
+
+    # Only keep year-1 and year (at most 13 months of data needed)
+    eligible = eligible[eligible["yr"].isin([year - 1, year])].copy()
+
+    # Integer year-month key for fast filtering
+    eligible["ym"] = eligible["yr"] * 100 + eligible["mo"]
+
+    # Monthly aggregate market volume indexed by ym integer
+    mkt_monthly = eligible.groupby("ym")["vol_adj"].sum()
+
+    month_names = {5: "vr_may", 6: "vr_jun", 7: "vr_jul", 8: "vr_aug", 9: "vr_sep"}
+    series_list = []
+
+    for target_month in months:
+        col_name = month_names.get(target_month, f"vr_m{target_month:02d}")
+
+        # Build 6 trailing ym integer keys
+        trailing_yms = []
+        m, y = target_month - 1, year
+        for _ in range(6):
+            if m == 0:
+                m, y = 12, y - 1
+            trailing_yms.append(y * 100 + m)
+            m -= 1
+
+        # Market VR component
+        target_ym = year * 100 + target_month
+        mkt_current = float(mkt_monthly.get(target_ym, 0.0))
+        mkt_trail_avg = float(np.mean([mkt_monthly.get(ym, 0.0) for ym in trailing_yms]))
+        if mkt_trail_avg <= 0:
+            series_list.append(pd.Series(name=col_name, dtype=float))
+            continue
+        mkt_vr = mkt_current / mkt_trail_avg
+
+        # Stock current volume
+        cur = (
+            eligible[eligible["ym"] == target_ym][["PERMNO", "vol_adj"]]
+            .drop_duplicates("PERMNO")
+            .rename(columns={"vol_adj": "vol_current"})
+        )
+
+        # Stock trailing average (mean across available trailing months)
+        trail = (
+            eligible[eligible["ym"].isin(trailing_yms)][["PERMNO", "vol_adj"]]
+            .groupby("PERMNO")["vol_adj"]
+            .mean()
+            .rename("vol_trail_avg")
+            .reset_index()
+        )
+
+        merged = cur.merge(trail, on="PERMNO", how="inner")
+        valid = merged[merged["vol_trail_avg"] > 0].copy()
+        valid[col_name] = (valid["vol_current"] / valid["vol_trail_avg"]) / mkt_vr
+
+        series_list.append(valid.set_index("PERMNO")[col_name])
+
+    if not series_list:
+        return pd.DataFrame(columns=["PERMNO", "year"])
+
+    result = pd.concat(series_list, axis=1).reset_index()
+    result["year"] = year
+    return result
+
+
+def construct_outcome_variables(data, year, months=(5, 6, 7, 8, 9)):
+    """Construct monthly return outcome variables for the fuzzy RD regressions.
+
+    Extracts CRSP monthly returns for May through September of the
+    reconstitution year in wide format (one row per PERMNO).  Designed to
+    be merged with addition/deletion panels from identify_index_switchers()
+    on ['PERMNO', 'year'].
+
+    Volume ratio (VR) and comovement beta require CRSP daily data and are
+    not constructed here; they should be computed separately when crsp_daily
+    is loaded.
+
+    Parameters
+    ----------
+    data : dict
+        Cleaned data dict from merge_crsp_compustat(), with 'crsp_monthly'.
+    year : int
+        Reconstitution year.
+    months : tuple of int, optional
+        Calendar months to extract (default: May–September, i.e. 5–9).
+
+    Returns
+    -------
+    pd.DataFrame
+        Wide-format DataFrame: PERMNO, year, ret_may, ret_jun, ret_jul,
+        ret_aug, ret_sep (or ret_mNN for unlisted months).
+        NaN where a stock has no return for that month (e.g. delisted).
+    """
+    crsp_m = data["crsp_monthly"]
+
+    month_cols = {5: "ret_may", 6: "ret_jun", 7: "ret_jul", 8: "ret_aug", 9: "ret_sep"}
+
+    series_list = []
+    for m in months:
+        col = month_cols.get(m, f"ret_m{m:02d}")
+        subset = crsp_m[
+            (crsp_m["date"].dt.year == year) & (crsp_m["date"].dt.month == m)
+        ][["PERMNO", "RET"]].copy()
+        subset["RET"] = pd.to_numeric(subset["RET"], errors="coerce")
+        # CRSP monthly has at most one row per PERMNO per month; guard anyway
+        s = subset.drop_duplicates("PERMNO").set_index("PERMNO")["RET"].rename(col)
+        series_list.append(s)
+
+    result = pd.concat(series_list, axis=1).reset_index()
+    result["year"] = year
+    return result

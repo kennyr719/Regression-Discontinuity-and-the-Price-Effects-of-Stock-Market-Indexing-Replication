@@ -1,7 +1,11 @@
 """Auxiliary functions for the Russell RD replication project."""
 
 from auxiliary.data_processing import (
+    compute_banding_cutoffs,
     compute_market_cap_rankings,
+    construct_outcome_variables,
+    construct_validity_variables,
+    construct_volume_ratio,
     identify_index_switchers,
     merge_crsp_compustat,
 )
