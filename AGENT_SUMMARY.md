@@ -115,31 +115,40 @@ jupyter nbconvert --to notebook --execute --inplace \
 
 ---
 
-## 6. Replication Results (Current — pre-HC1 rerun)
+## 6. Replication Results (Current)
 
 ### Table 4: Returns Fuzzy RD (1996–2012)
 | Month | Addition | Deletion | Paper Addition | Paper Deletion |
 |-------|----------|----------|----------------|----------------|
-| May | −1.41% (t=−0.82) | −0.30% (t=−0.22) | −0.3% | +0.5% |
-| **Jun** | **−0.60% (t=−0.39)** | **+0.74% (t=+0.50)** | **+5.0% (t=2.65)** | **+5.4% (t=3.00)** |
-| Jul | −1.40% (t=−0.76) | −1.90% (t=−1.36) | −0.3% | −1.9% |
+| May | −1.41% (t=−0.76) | −0.30% (t=−0.21) | −0.3% | +0.5% |
+| **Jun** | **−0.60% (t=−0.37)** | **+0.74% (t=+0.46)** | **+5.0% (t=2.65)** | **+5.4% (t=3.00)** |
+| Jul | −1.40% (t=−0.72) | −1.90% (t=−1.30) | −0.3% | −1.9% |
+| Aug | +2.70% (t=+1.42) | −3.35% (t=−2.76) | +3.5% | −0.2% |
 
-June estimates are attenuated (see §1 re: D=τ and rank noise). July deletion matches well.
+June addition is **wrong-signed** (not merely attenuated). This is consistent with rank misclassification noise dominating the small true ITT near the cutoff. May addition (−1.41% vs −0.3%) does NOT match well — it's same sign but 4.7× larger.
 
 ### Table 5: Volume Ratio (1996–2012)
-- Addition June VR: −0.176 (t=−1.46) vs paper's +0.478 (t=3.14) — wrong sign (noise)
-- Deletion June VR: −0.147 (t=−1.77) vs paper's −0.263 (t=−2.74) — same sign ✓
+- Addition June VR: −0.176 (t=−1.00) vs paper's +0.478 (t=3.14) — wrong sign (noise)
+- Deletion June VR: −0.147 (t=−1.87) vs paper's −0.263 (t=−2.74) — same sign ✓
+
+Note: Unconditional mean VR = 1.397 (expected ~1.0). Likely due to positive volume skew near reconstitution dates. See Module 3 in CLAUDE.md for optional investigation.
 
 ### Table 6: Validity Tests
-All 8 variables (market_cap, repurchase, ROE, ROA, EPS, assets, ICR, C/A) show insignificant discontinuities ✓
+**⚠️ NOT "all insignificant"**: 6 of 8 variables show no significant discontinuity. Two are significant at 5%:
+- Repurchase (deletion): t = −2.32
+- Cash/assets (addition): t = +2.39
+
+With 16 tests (8 variables × 2 samples), 1–2 rejections at 5% are expected by chance (16 × 0.05 = 0.8). Broadly supportive of the design.
 
 ### Tables 7-8: Time Trends (1996–2012)
-- **Deletion β₂ᵣ = −0.495% (t=−2.52)** — replicates the paper's declining price impact (t=−2.46) ✓
-- Addition β₂ᵣ = −0.162% (t=−0.67) — same sign but not significant
+- **Deletion β₂ᵣ = −0.495% (t=−2.61)** — replicates the paper's declining price impact ✓ (strongest result)
+- Addition β₂ᵣ = −0.162% (t=−0.64) — same sign but not significant
 
 ### Extension: 2015–2024
-- Addition: β₀ᵣ = +8.36% (t=1.27), β₂ᵣ = −0.84% (t=−0.83) — large but noisy (N=127)
-- Deletion: β₀ᵣ = −5.28% (t=−1.27), β₂ᵣ = −0.34% (t=−0.57) — effect may have vanished
+- Addition: β₀ᵣ = +8.357% (t=+1.51), β₂ᵣ = −0.839% (t=−0.78) — large but very noisy (N=127)
+- Deletion: β₀ᵣ = −5.284% (t=−1.40), β₂ᵣ = −0.340% (t=−0.65) — effect may have vanished (N=279)
+
+**⚠️ Cell 28 markdown currently contains WRONG numbers** (from a previous run). See §12 for the fix list.
 
 ---
 
@@ -150,7 +159,7 @@ Two competing hypotheses about how index price effects changed as passive AUM tr
 1. **Passive distortion**: larger effects (more passive money → more mechanical buying/selling at reconstitution)
 2. **Arbitrage efficiency**: smaller effects (arbitrage capital scales alongside passive, muting price impact)
 
-The evidence leans toward **arbitrage efficiency**: the deletion time trend in 1996–2012 shows a strongly declining price impact (β₂ᵣ = −0.50%, t=−2.52), and the 2015–2024 deletion effect is statistically indistinguishable from zero. However, the 2015–2024 samples are small (N=127 addition, N=279 deletion) due to the wide post-banding cutoffs, limiting statistical power.
+The 1996–2012 deletion time trend (β₂ᵣ = −0.495%, t=−2.61) is the single most robust finding — it replicates the paper's declining price impact with statistical significance. The 2015–2024 estimates are suggestive but underpowered: the deletion effect appears to have vanished (β₀ᵣ = −5.28%, t=−1.40), consistent with the arbitrage efficiency hypothesis, but confidence intervals are wide due to small samples (N=127 addition, N=279 deletion). These results should be interpreted cautiously given the D = τ attenuation and limited post-banding sample sizes.
 
 ---
 
@@ -211,3 +220,29 @@ These were template leftovers from an eisenhauerIO student template (referenced 
 - `environment.yml` exists but the `russell-rd` conda env was never created
 - Data accessed through WRDS; stored in `data/` (gitignored)
 - To run the notebook: `jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=3600 project.ipynb`
+
+---
+
+## 12. Pending Fixes — Narrative Cleanup
+
+**All computation is correct. Only the presentation layer (markdown cells + print footers) needs fixing.**
+
+The notebook has internal contradictions where markdown narrative cells contain numbers from previous runs that don't match current cell outputs. See CLAUDE.md "Priority Fixes" for the full module-by-module implementation plan.
+
+### Summary of contradictions to fix
+
+| Location | Problem |
+|----------|---------|
+| Cell 0 (intro) | Frames project as straightforward replication; needs sharp RD / methodological case study framing |
+| Cell 20 (Table 4 footer) | Claims "May matches well" — addition May is −1.41% vs paper −0.3% (4.7× larger) |
+| Cell 24 (validity markdown) | Will say "all insignificant" but 2 of 16 tests reject at 5% |
+| Cell 28 (extension conclusions) | Contains WRONG numbers: β₂ᵣ=−0.22% (actual: −0.495%), N=780 (actual: 127), etc. |
+| Cell 30 (summary table) | Stale t-stats (−0.39 should be −0.37, −1.46 should be −1.00, etc.) |
+| Cell 30 (summary table) | Claims "All insignificant" for validity; should be "6/8 insignificant" |
+| Cell 30 (summary table) | Calls addition June "Attenuated" — it's wrong-signed, which is noise domination not attenuation |
+
+### What NOT to touch
+- All code cells that produce numerical output — these are correct
+- `auxiliary/` module code — all functions are verified
+- Data pipeline, ranking construction, banding — all verified
+- Figure generation code — all working

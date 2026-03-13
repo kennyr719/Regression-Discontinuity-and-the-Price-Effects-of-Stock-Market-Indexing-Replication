@@ -33,13 +33,13 @@
 - Wide bands are intentional — Russell designed banding to significantly reduce turnover
 
 ## Replication Results (with correct banding)
-- Table 4 June addition: −0.60% (t=−0.39) vs paper's +5.0% (t=2.65) — attenuated (ITT + rank noise)
-- Table 4 June deletion: +0.74% (t=+0.50) vs paper's +5.4% (t=3.00) — same sign, heavily attenuated
-- May placebo: −1.41% addition, −0.30% deletion — near zero ✓
-- Table 6 validity: all insignificant ✓
-- Deletion time trend 1996–2012: β_2r = −0.495% (t=−2.52) — replicates paper's declining effect ✓
-- Extension 2015–2024 Addition: β_0r = +8.36% (t=1.27), β_2r = −0.84% (t=−0.83)
-- Extension 2015–2024 Deletion: β_0r = −5.28% (t=−1.27), β_2r = −0.34% (t=−0.57)
+- Table 4 June addition: -0.60% (t=-0.37) vs paper's +5.0% (t=2.65) — WRONG SIGN (noise dominates attenuated ITT)
+- Table 4 June deletion: +0.74% (t=+0.46) vs paper's +5.4% (t=3.00) — same sign, heavily attenuated
+- May: addition -1.41% (paper -0.3%, NOT a close match), deletion -0.30% (paper +0.5%)
+- Table 6 validity: 6/8 insignificant; 2 marginal rejections (repurchase-deletion t=-2.32, cash/assets-addition t=+2.39) consistent with multiple testing (16 tests x 0.05 = 0.8 expected)
+- Deletion time trend 1996-2012: beta_2r = -0.495% (t=-2.61) — replicates paper's declining effect (STRONGEST RESULT)
+- Extension 2015-2024 Addition: beta_0r = +8.357% (t=+1.51), beta_2r = -0.839% (t=-0.78), N=127 (very small)
+- Extension 2015-2024 Deletion: beta_0r = -5.284% (t=-1.40), beta_2r = -0.340% (t=-0.65), N=279
 
 ## Attenuation Diagnosis
 Two sources of attenuation vs. paper's results:
@@ -57,3 +57,10 @@ Two sources of attenuation vs. paper's results:
 - Deleted: files/causalgraph1.PNG, causalgraph2.PNG, bounds_nextGPA.PNG (template images)
 - Deleted: edit_notebook*.py, fix3_fix4.py (one-off scripts)
 - README.md — updated with correct project description and extension info
+## Pending Narrative Fixes (see CLAUDE.md for full plan)
+- Cell 28 (extension conclusions) has WRONG numbers from a previous run — must use Cell 27 output
+- Cell 30 (summary table) has stale t-stats — must match actual cell outputs
+- Cell 20 footer claims "May matches well" — it doesn't (addition May is 4.7x paper's)
+- Cell 24/30 claim "all insignificant" validity — 2 of 16 tests reject at 5%
+- Cell 0 intro needs sharp RD / methodological case study framing
+- All fixes are markdown or print-statement only — no computation changes needed

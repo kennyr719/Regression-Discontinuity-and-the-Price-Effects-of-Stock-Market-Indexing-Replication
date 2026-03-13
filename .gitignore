@@ -8,6 +8,11 @@ build/
 
 # Jupyter
 .ipynb_checkpoints/
+project_BACKUP.ipynb
+project.ipynb.bak
+
+# Archives
+Russell-RD-Replication.zip
 
 # Environment
 .env

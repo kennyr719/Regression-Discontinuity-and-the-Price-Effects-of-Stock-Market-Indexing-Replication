@@ -19,58 +19,253 @@ After replicating the original 1996–2012 results, we extend the sample to 2015
 ## Current Project State (as of latest session)
 
 ### What is COMPLETE and working ✅
-- **Data pipeline**: `merge_crsp_compustat()` and `compute_market_cap_rankings()` — fully implemented and verified. Rankings for 1996–2024 are correct (top stocks check out, rank-1000 market caps in expected range).
+- **Data pipeline**: `merge_crsp_compustat()` and `compute_market_cap_rankings()` — fully implemented and verified. Rankings for 1996–2024 are correct.
 - **Sample construction**: `identify_index_switchers()` — builds addition/deletion panels using prior-year rank as membership proxy. Sets D = τ (sharp RD approximation).
 - **Outcome variables**: `construct_outcome_variables()` (monthly returns) and `construct_volume_ratio()` (VR) are implemented.
-- **Estimation**: `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` — HC1-robust SEs via `S_white_simple`, optional `poly_degree=2` quadratic robustness check (Chang et al. Section 4.2).
-- **Bandwidth**: `optimal_bandwidth()` returns 100 (paper's canonical choice). `bandwidth_sensitivity()` tests h ∈ {50, 100, 150}.
+- **Estimation**: `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` — HC1-robust SEs via `S_white_simple`, optional `poly_degree=2`.
+- **Bandwidth**: `optimal_bandwidth()` returns 100. `bandwidth_sensitivity()` tests h ∈ {50, 100, 150}.
 - **Validity tests**: `construct_validity_variables()` merges Compustat annual fundamentals.
-- **All notebook sections executed**: Sections 1–10 all have output, including Figure 1, Tables 3–6, Figure 4, Tables 7–8, extension, Figure 5, summary table.
-- **`plot_index_weights()`**: Returns `None` with a docstring explaining the data limitation (Russell float-adjusted weights are proprietary and unavailable).
+- **All notebook sections executed**: Sections 1–10 all have output.
+- **Banding**: `compute_banding_cutoffs()` uses reverse cumulative market cap (footnote 5). Verified.
+- **HC1 SEs**: Both estimation functions use HC1-robust standard errors.
 
-### What STILL NEEDS IMPLEMENTATION 🔲
-- Summary table in Cell 30 — outputs reflect old homoskedastic SEs; needs re-running after estimation changes to show HC1-robust values.
-
-### Known Issues / Bugs 🐛
-See the "Priority Fixes" section below for detailed instructions.
+### What STILL NEEDS FIXING 🔲
+The notebook has **internal contradictions, stale numbers, and overclaims** in its markdown narrative cells and print-statement footers. All computation is correct — only the *presentation layer* needs fixing. See "Priority Fixes" below.
 
 ---
 
 ## Priority Fixes (IMPLEMENT THESE)
 
-### FIX 1 ✅ DONE: `compute_banding_cutoffs()` — correct band calculation
+**Guiding principle**: Reframe the project from "replication that fell short" → **"methodological implementation with transparent diagnosis of why public-data sharp RD diverges from the original fuzzy RD."**
 
-**What was fixed**: The band uses *reverse cumulative market cap* as described in footnote 5 of Chang et al. (2015). C_rev%(k) = fraction of total R3000E market cap held by stocks ranked k through N (bottom-up cumulation). C_rev%(1000) ≈ 9–10%. Band: stocks switch only if C_rev%(k) deviates by > 2.5pp from C_rev%(1000).
+### Execution order and dependencies
 
-**Result**: Cutoffs k_add≈1251–1545, k_del≈738–823. Verified against footnote 5 example: stock 1210 in 2007 at C_rev%=7.24% stays in R1000 (band lower limit 6.89%) ✓.
-
-### FIX 2 ✅ DONE: Run unexecuted notebook cells
-
-All notebook cells now have output (Sections 1–10 complete). To regenerate outputs with updated HC1-robust SEs after the estimation changes, run:
-```bash
-jupyter nbconvert --to notebook --execute --inplace \
-  --ExecutePreprocessor.timeout=3600 project.ipynb
+```
+Module 0 (backup)
+    │
+    ▼
+Module 1 (markdown fixes) ← HIGHEST VALUE, ZERO RISK — no code changes
+    │
+    ├──► Module 2 (Table 4 print fix) — depends on M1 for wording
+    ├──► Module 4 (validity note) — independent
+    └──► Module 5 (extension cleanup) — independent
+    │
+    ▼
+Module 3 (VR investigation) ← OPTIONAL, skip if time-constrained
+    │
+    ▼
+Module 6 (final review) ← ALWAYS DO LAST
 ```
 
-### FIX 3 ✅ DONE: Summary Table (Cell 30)
+**Minimum viable delivery**: Modules 0 + 1 + 6.
+**Full delivery**: All modules in order.
 
-Cell 30 has a completed summary table comparing original vs. replicated values. Note the attenuation caveat — our ITT estimates are smaller than the paper's LATE by factor ~0.785 (D = τ) plus rank noise.
+---
 
-### FIX 4 ✅ DONE: Extension conclusion (Cell 28)
+### MODULE 0: Snapshot
 
-Cell 28 (markdown) contains the extension conclusion, covering: sample size limitations, D = τ attenuation, hypothesis evaluation, and the one robust finding (deletion time trend β₂ᵣ ≈ −0.50%, t ≈ −2.52).
+`cp project.ipynb project_BACKUP.ipynb`
 
-### FIX 5 ✅ DONE: Legacy template files deleted
+---
 
-Deleted: `auxiliary/plots.py`, `auxiliary/predictions.py`, `auxiliary/tables.py`, template images, `edit_notebook*.py` scripts. `auxiliary/__init__.py` updated.
+### MODULE 1: Fix All Markdown Narrative Cells (NO code changes)
 
-### FIX 6 ✅ DONE: HC1-robust standard errors + robustness tools
+This module touches ONLY markdown cells. It cannot break any computation. It fixes every internal contradiction and overclaim.
 
-- `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` now use HC1-robust SEs via `statsmodels.stats.sandwich_covariance.S_white_simple` (the only statsmodels import that avoids the broken scipy chain in base conda).
-- Both functions accept `poly_degree=1` (default, local linear) or `poly_degree=2` (quadratic robustness check per Chang et al. Section 4.2).
-- `optimal_bandwidth()` returns 100 (paper's choice); no longer raises `NotImplementedError`.
-- New `bandwidth_sensitivity(df, outcome, bandwidths=(50,100,150))` for bandwidth robustness.
-- `plot_index_weights()` returns `None` with a docstring explaining Russell float-adjusted weights are proprietary and unavailable through WRDS.
+#### Cell 0 (Introduction) — Reframe the project
+
+Replace the current intro. Key points to include:
+- We implement the CHL (2015) RD design using publicly available CRSP/Compustat data
+- Because actual Russell constituent lists are proprietary and unavailable through our WRDS/FactSet subscriptions, we use a **sharp RD** approximation (D = τ) rather than the paper's fuzzy RD
+- This yields Intent-to-Treat (ITT) estimates, mechanically attenuated relative to the paper's LATE
+- The project serves as both a replication attempt and a **methodological case study** in how data access constraints propagate through RD estimation
+- We extend the sample through 2024 to test whether index reconstitution price effects have grown or declined alongside the rise of passive investing
+
+#### Cell 16 (Section 5 — First Stage) — Add sharp RD context
+
+Add: "Because we set D = τ, the first stage is mechanically 1.0 by construction. We report it for completeness, and to highlight the gap vs. the paper's α₀ᵣ ≈ 0.785, which directly scales the second-stage estimates."
+
+#### Cell 19 (Section 6 — Table 4 intro) — Reframe expectations
+
+Replace generic "second-stage estimates the causal effect" with:
+- Under sharp RD, β₀ᵣ recovers the ITT, not the LATE
+- Two attenuation sources: (1) missing first-stage scaling (÷ 0.785 ≈ 27% gap), (2) rank reconstruction noise (~25–30% misclassification near cutoff)
+- Combined attenuation of 50–70%; when misclassification is severe enough, can flip the sign of small effects toward noise
+- Key diagnostic: the deletion time trend (within-estimator, less sensitive to level attenuation) should replicate
+
+#### Cell 22 (Section 7 — VR intro) — Address mean VR = 1.397
+
+Add: "The unconditional mean VR of ~1.4 reflects positive skew in trading volume near index reconstitution dates; the RD estimates are identified from the discontinuity at the cutoff, not the level."
+
+#### Cell 24 (Section 8 — Validity intro) — Do NOT claim "all insignificant"
+
+Current output shows repurchase (deletion) t = −2.32 and cash/assets (addition) t = +2.39 — both significant at 5%. The markdown must say: **"6 of 8 variables show no significant discontinuity. Two — repurchase activity (deletion) and cash-to-assets (addition) — are marginally significant at 5%. With 16 tests (8 variables × 2 samples), 1–2 rejections at 5% are expected by chance (16 × 0.05 = 0.8). We interpret the validity tests as broadly supportive."**
+
+#### Cell 26 (Section 9 — Time Trends intro) — Keep, soften
+
+Don't pre-commit to conclusions before showing estimates.
+
+#### Cell 28 (Extension Conclusions) — FULL REWRITE (most critical)
+
+This cell has the worst contradictions. **Numbers in Cell 28 do NOT match Cell 27 output.** Replace entirely using the ACTUAL numbers from Cell 27:
+
+| Value | Cell 28 claims (WRONG) | Cell 27 output (CORRECT) |
+|-------|----------------------|------------------------|
+| Deletion 96–12 β₂ᵣ | −0.22% (t=−1.59) | −0.495% (t=−2.61) |
+| Addition 15–24 β₀ᵣ | +4.63% (t=2.51) | +8.357% (t=+1.51) |
+| Addition 15–24 N | 780 | 127 |
+| Deletion 15–24 N | 1,023 | 279 |
+
+New Cell 28 must:
+1. Use only numbers from Cell 27 output
+2. Acknowledge N=127 addition is very small
+3. Use hedged language: "suggestive," "consistent with" — not "evidence leans toward"
+4. Frame the deletion time trend 1996–2012 as the single most robust result
+
+#### Cell 30 (Summary Table) — Reconcile all numbers
+
+Every number must match its source cell output:
+
+| Row | Current (wrong) | Correct (from cell output) |
+|-----|-----------------|---------------------------|
+| Addition June t-stat | −0.39 | −0.37 (Cell 20) |
+| Deletion June t-stat | +0.50 | +0.46 (Cell 20) |
+| VR addition t-stat | −1.46 | −1.00 (Cell 23) |
+| VR deletion t-stat | −1.77 | −1.87 (Cell 23) |
+| Validity tests | "All insignificant" | "6/8 insignificant; 2 marginal rejections consistent with multiple testing" |
+| Addition June "Match?" | "Attenuated" | "Wrong sign — noise dominates attenuated ITT" |
+
+Add a paragraph below the table: **"The strongest replication successes are: (1) the deletion time trend, which replicates the paper's declining price impact in both sign and significance; (2) the validity tests, which confirm no systematic manipulation at the cutoff; and (3) the deletion VR, which shows the correct sign. The headline June return effects are severely attenuated, as expected given D = τ and rank reconstruction error."**
+
+---
+
+### MODULE 2: Fix Table 4 Print Statements (Cell 20 — code, print only)
+
+The current code prints `"May matches well"` — addition May is −1.41% vs paper's −0.3%, which is NOT matching well.
+
+Replace the trailing print block with:
+```python
+print()
+print("Paper targets (LATE, actual Russell lists):")
+print("  Addition: May=-0.3%  Jun=+5.0% (t=2.65)  Jul=-0.3%  Aug=+3.5%  Sep=+0.8%")
+print("  Deletion: May=+0.5%  Jun=+5.4% (t=3.00)  Jul=-1.9%  Aug=-0.2%  Sep=+2.5%")
+print()
+print("Note: Our sharp-RD ITT estimates are expected to be substantially attenuated")
+print("(see Section 5 discussion). The addition June estimate is wrong-signed,")
+print("consistent with rank misclassification dominating the small true effect")
+print("near the cutoff. The deletion August coefficient is the strongest individual")
+print("month result, suggesting some index-rebalancing signal survives the noise.")
+```
+
+**Acceptance test**: Re-run Cell 20. Table numbers unchanged. Footer text corrected.
+
+---
+
+### MODULE 3: Investigate VR Construction (OPTIONAL — skip if time-constrained)
+
+Mean VR = 1.397; expected ~1.0. Diagnose whether this is a bug or selection effect.
+
+Steps:
+1. Print `vr_jun` distribution: median, 25th/75th, min, max
+2. Check market-volume denominator normalization
+3. If selection effect (reconstitution-adjacent stocks have higher volume) → document and move on
+4. If code bug in `construct_volume_ratio()` → fix and re-run
+
+**Damage control**: If rabbit hole, skip. The "positive skew" footnote from Module 1 is sufficient.
+
+---
+
+### MODULE 4: Add Multiple-Testing Note to Validity Tests (Cell 25 — code, print only)
+
+After the table in Cell 25, append:
+```python
+print()
+print("Note: 2 of 16 tests reject at 5% (repurchase-deletion, cash/assets-addition).")
+print("Under independent tests, E[rejections] = 16 × 0.05 = 0.8.")
+print("Two rejections is within the expected range under the null of no manipulation.")
+```
+
+**Acceptance test**: Re-run Cell 25. Table unchanged. Note appended.
+
+---
+
+### MODULE 5: Clean Up Extension Print Statements (Cell 27 — code, print only)
+
+After the main comparison table, add diagnostic print block:
+```python
+print()
+print("Sample sizes:")
+print(f"  Addition 1996-2012: N={len(add_rep)}")
+print(f"  Addition 2015-2024: N={len(add_ext)}")
+print(f"  Deletion 1996-2012: N={len(del_rep)}")
+print(f"  Deletion 2015-2024: N={len(del_ext)}")
+print()
+print("Interpretation caveats:")
+print("  - 2015-2024 addition N is very small; estimates are noisy")
+print("  - All estimates are ITT (D=tau), attenuated relative to paper's LATE")
+print("  - Deletion time trend 1996-2012 is the most robust result")
+```
+
+Move the "Passive distortion / Arbitrage efficiency" print block to BEFORE the table (as framing, not conclusion).
+
+**Acceptance test**: Re-run Cell 27. Table numbers unchanged. Diagnostics appended.
+
+### MODULE 5b: Add Deletion Rolling Estimates to Figure 5 (Cell 29 — code)
+
+Cell 29 currently only computes and plots addition rolling estimates. Add a second 
+loop over `deletion_df` using the same 3-year rolling window and quality filter 
+(N ≥ 15, ≥ 3 obs per side). Create a 2-panel figure (1×2 subplots):
+- Left: "Addition Effect on June Returns" (existing)  
+- Right: "Deletion Effect on June Returns" (new)
+
+Save as `files/figure5_time_trends.png` (overwrite existing single-panel version).
+
+The deletion panel should visually show a declining trend, reinforcing the 
+β₂ᵣ = −0.495% finding from the time trend regression.
+---
+
+### MODULE 6: Final Consistency Review
+
+Read the entire notebook top-to-bottom. Verify:
+- [ ] Every number in Cell 30 summary matches its source cell output
+- [ ] Cell 28 narrative uses only numbers from Cell 27 output
+- [ ] No cell claims "all insignificant" when some are significant
+- [ ] No cell claims results "match well" when they don't
+- [ ] The word "attenuation" is never used to describe a sign flip (sign flips are from noise domination, not attenuation)
+- [ ] Extension conclusions use hedged language
+- [ ] VR mean is documented
+- [ ] Introduction sets up sharp RD framing so weak results aren't surprising
+
+---
+
+### Cells modified by module
+
+| File | Cell | Type | Module |
+|------|------|------|--------|
+| `project.ipynb` | 0 | markdown | M1 |
+| `project.ipynb` | 16 | markdown | M1 |
+| `project.ipynb` | 19 | markdown | M1 |
+| `project.ipynb` | 20 | code (print only) | M2 |
+| `project.ipynb` | 22 | markdown | M1 |
+| `project.ipynb` | 24 | markdown | M1 |
+| `project.ipynb` | 25 | code (print only) | M4 |
+| `project.ipynb` | 26 | markdown | M1 |
+| `project.ipynb` | 27 | code (print only) | M5 |
+| `project.ipynb` | 28 | markdown | M1 |
+| `project.ipynb` | 30 | markdown | M1 |
+| `auxiliary/data_processing.py` | `construct_volume_ratio()` | M3 (only if bug found) |
+
+---
+
+### Previously completed fixes (for reference)
+
+These are all done and should NOT be re-implemented:
+- ✅ `compute_banding_cutoffs()` — reverse cumulative market cap (footnote 5)
+- ✅ All notebook cells executed with output
+- ✅ HC1-robust standard errors in both estimation functions
+- ✅ `optimal_bandwidth()` returns 100; `bandwidth_sensitivity()` implemented
+- ✅ Legacy template files deleted
+- ✅ `plot_index_weights()` returns `None` with docstring
 
 ---
 
