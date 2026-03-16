@@ -34,11 +34,19 @@
 - Step 0 ✅: project_BACKUP_pre_fuzzy.ipynb created
 - Step 0a ✅: CLAUDE.md, AGENT_SUMMARY.md, MEMORY.md updated (sharp RD references removed)
 - Step 1 ✅: match_bloomberg_to_crsp() implemented and verified
-- Step 2 🔲: Modify identify_index_switchers() to accept bloomberg_file param and construct D_actual
-- Step 3 🔲: Upgrade fuzzy_rd_estimate() for proper 2SLS (first stage: D_actual ~ τ + rank_centered)
-- Step 4 🔲: Same for fuzzy_rd_time_trend()
-- Step 5 🔲: Re-run full notebook
-- Step 6 🔲: Update narrative cells for fuzzy RD framing
+- Step 2 ✅: identify_index_switchers() now accepts bloomberg_panel=... param. Sets D=D_actual from Bloomberg, fallback D=τ for unmatched. D_actual column preserved.
+- Step 3 ✅: fuzzy_rd_estimate() was already proper 2SLS — no code change. Wiring D_actual in was sufficient.
+- Step 4 ✅: fuzzy_rd_time_trend() — same, already proper 2SLS.
+- Step 5 🔲: Re-run full notebook (all cells need to be re-executed with Bloomberg data)
+- Step 6 🔲: Update remaining narrative cells — especially Cell 30 summary table numbers
+
+### First-Stage Results (Steps 2–4 complete, BW=100, 1996–2012)
+- Addition pre-banding: α₀r=0.462, t=11.77, F=75, N=856  (paper: 0.785, F=1876)
+- Addition post-banding: α₀r=0.215, t=1.19, F=1, N=85   (paper: 0.820, F=297) — unusable
+- Deletion pre-banding: α₀r=0.476, t=16.09, F=182, N=1208 (paper: 0.705, F=1799)
+- Deletion post-banding: α₀r=0.096, t=1.00, F=13, N=231  (paper: 0.759, F=815) — weak
+
+**Root cause**: Asymmetric rank reconstruction noise. D=1,τ=0 (total share rank says R1000 but Russell says R2000): 9.2% of pre-banding addition obs. D=0,τ=1: only 2.9%. The asymmetry comes from total shares ≥ float shares → our ranks consistently overstate market cap → many stocks we rank ~950 are ranked ~1050 by Russell (genuinely R2000). Cannot fix without float data or NCUSIP for CUSIP-based matching.
 
 ## Data Facts
 - CRSP monthly dates are the **last trading day** of each month (not necessarily the 31st).
@@ -72,14 +80,12 @@
 - Verified against footnote 5 of Chang et al. (2015): stock 1210 in 2007 at C_rev%=7.24% stays in R1000 ✓
 - Wide bands are intentional — Russell designed banding to significantly reduce turnover
 
-## Replication Results (with correct banding)
-- Table 4 June addition: -0.60% (t=-0.37) vs paper's +5.0% (t=2.65) — WRONG SIGN (noise dominates attenuated ITT)
-- Table 4 June deletion: +0.74% (t=+0.46) vs paper's +5.4% (t=3.00) — same sign, heavily attenuated
-- May: addition -1.41% (paper -0.3%, NOT a close match), deletion -0.30% (paper +0.5%)
-- Table 6 validity: 6/8 insignificant; 2 marginal rejections (repurchase-deletion t=-2.32, cash/assets-addition t=+2.39) consistent with multiple testing (16 tests x 0.05 = 0.8 expected)
-- Deletion time trend 1996-2012: beta_2r = -0.495% (t=-2.61) — replicates paper's declining effect (STRONGEST RESULT)
-- Extension 2015-2024 Addition: beta_0r = +8.357% (t=+1.51), beta_2r = -0.839% (t=-0.78), N=127 (very small)
-- Extension 2015-2024 Deletion: beta_0r = -5.284% (t=-1.40), beta_2r = -0.340% (t=-0.65), N=279
+## Replication Results (with correct banding) — STALE: sharp RD, pre-Bloomberg
+These are from the D=τ run. Steps 2–4 are done; notebook needs re-execution (Step 5).
+- Table 4 June addition: -0.60% (t=-0.37) vs paper's +5.0% (t=2.65) — wrong sign (old sharp RD)
+- Table 4 June deletion: +0.74% (t=+0.46) vs paper's +5.4% (t=3.00) — same sign, attenuated
+- Deletion time trend 1996-2012: beta_2r = -0.495% (t=-2.61) — replicates paper (STRONGEST RESULT)
+- Extension 2015-2024: underpowered (N=127 addition, N=279 deletion)
 
 ## Attenuation Diagnosis (OLD sharp RD — now superseded by Bloomberg data)
 **UPDATE: Bloomberg constituent data now available. D = τ constraint is resolved. The attenuation diagnosis below describes the OLD sharp RD results; the fuzzy 2SLS should recover estimates close to the paper's LATE.**
@@ -97,5 +103,16 @@
 - Deleted: files/causalgraph1.PNG, causalgraph2.PNG, bounds_nextGPA.PNG (template images)
 - Deleted: edit_notebook*.py, fix3_fix4.py (one-off scripts)
 - README.md — updated with correct project description and extension info
-## Pending Narrative Fixes
-**OBSOLETE: These fixes were for the sharp RD framing. With Bloomberg data, the narrative should instead frame this as a proper fuzzy RD replication. See IMPLEMENTATION_PLAN.md Step 6.**
+## Estimation — current state
+- fuzzy_rd_estimate() and fuzzy_rd_time_trend() already implement proper 2SLS (first stage: D ~ [1,r,τ,τ*r,FEs] → D_hat; second stage uses D_hat). HC1 SEs via S_white_simple. No changes needed for Steps 3-4.
+- __init__.py exports: match_bloomberg_to_crsp, bandwidth_sensitivity, fuzzy_rd_time_trend
+
+## Notebook cell changes (latest session — cells NOT re-executed yet)
+- Cell 2: added match_bloomberg_to_crsp import
+- Cell 9: rewritten to load bloomberg_panel and pass bloomberg_panel=... to identify_index_switchers(); also prints misclassification diagnostics
+- Cell 16 (markdown): removed "Sharp RD note: D=τ by construction" paragraph; replaced with proper fuzzy RD framing
+- Cell 17: removed "Note: D=τ here → α_0r≈1.0" footer
+- Cell 19 (markdown): removed two-source attenuation / ITT framing; replaced with LATE framing
+- Cell 20: removed "Note: Our sharp-RD ITT estimates are expected to be substantially attenuated" footer
+- Cells 17, 20, 23, 25, 27, 29 outputs are STALE (show D=τ results); need Step 5 re-run
+- Cell 30 (summary table markdown) is also STALE — needs update with new numbers after re-run

@@ -24,7 +24,7 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 | `compute_market_cap_rankings()` | Generate end-of-May market cap rankings for a given year | ✅ Complete |
 | `compute_banding_cutoffs()` | Compute post-2007 banding-adjusted cutoffs | ✅ Fixed (see §8) |
 | `match_bloomberg_to_crsp()` | Match Bloomberg Russell constituent lists to CRSP PERMNOs via ticker → CCM link | ✅ NEW (Step 1) |
-| `identify_index_switchers()` | Build addition/deletion panels; sets D=tau now, needs Step 2 upgrade | 🔲 Needs D_actual upgrade |
+| `identify_index_switchers()` | Build addition/deletion panels; accepts optional `bloomberg_panel` param, sets D=D_actual (falls back to D=τ for unmatched) | ✅ Step 2 Complete |
 | `construct_outcome_variables()` | Extract monthly returns (May–Sep) for the RD analysis | ✅ Complete |
 | `construct_volume_ratio()` | Compute volume ratio (VR) = normalized stock volume / normalized market volume | ✅ Complete |
 | `construct_validity_variables()` | Merge prior-year Compustat annual fundamentals for validity tests | ✅ Complete |
@@ -60,7 +60,7 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 ### Specification details
 - **First stage**: D_it = α₀ₗ + α₁ₗ(r − c) [+ α₂ₗ r²] + τ[α₀ᵣ + α₁ᵣ(r − c) [+ α₂ᵣ r²]] + year FE + ε
 - **Second stage**: Y_it = β₀ₗ + β₁ₗ(r − c) [+ β₂ₗ r²] + D̂[β₀ᵣ + β₁ᵣ(r − c) [+ β₂ᵣ r²]] + year FE + ν
-- With Bloomberg D_actual, the first stage is an informative regression: α₀ᵣ ≈ 0.785, F > 200
+- With Bloomberg D_actual, the first stage gives: α₀ᵣ ≈ 0.462 (addition pre-banding), 0.476 (deletion pre-banding). F=75/182. Below the paper's 0.785/0.705 due to total-share vs. float-adjusted rank noise (see §12).
 - **Standard errors**: HC1-robust via `statsmodels.stats.sandwich_covariance.S_white_simple`.
   Assembly: `var_beta = (n / df_resid) * bread @ S_white_simple(X_hat * resid[:,None]) @ bread`
   This is the only statsmodels import that avoids the broken scipy chain in base conda.
@@ -118,7 +118,7 @@ jupyter nbconvert --to notebook --execute --inplace \
 
 ## 6. Replication Results (Current)
 
-**NOTE: Results below are from the sharp RD (D = τ) run. These will be updated after the fuzzy 2SLS upgrade using Bloomberg constituent data. See IMPLEMENTATION_PLAN.md.**
+**NOTE: Results below are from the sharp RD (D = τ) run. Steps 2–4 are now complete (fuzzy 2SLS wired in), but the notebook has NOT been re-executed yet (Step 5). The numbers below will change after re-running.**
 
 ### Table 4: Returns Fuzzy RD (1996–2012)
 | Month | Addition | Deletion | Paper Addition | Paper Deletion |
@@ -249,8 +249,20 @@ Full table in MEMORY.md. Low early-year rates driven by Bloomberg placeholder ti
 - Step 0 ✅: `project_BACKUP_pre_fuzzy.ipynb` created
 - Step 0a ✅: CLAUDE.md, AGENT_SUMMARY.md, MEMORY.md updated
 - Step 1 ✅: `match_bloomberg_to_crsp()` implemented and verified
-- Step 2 🔲: Modify `identify_index_switchers()` to accept `bloomberg_file` and construct D_actual
-- Step 3 🔲: Upgrade `fuzzy_rd_estimate()` for proper 2SLS (first stage: D_actual ~ τ + rank_centered)
-- Step 4 🔲: Same upgrade for `fuzzy_rd_time_trend()`
+- Step 2 ✅: `identify_index_switchers()` now accepts `bloomberg_panel` param; sets D=D_actual from Bloomberg (fallback to D=τ for unmatched stocks). `D_actual` column preserved for diagnostics.
+- Step 3 ✅: `fuzzy_rd_estimate()` was already proper 2SLS — no code change needed. The issue was D=τ; now D=D_actual is provided.
+- Step 4 ✅: `fuzzy_rd_time_trend()` — same, already proper 2SLS.
 - Step 5 🔲: Re-run full notebook with fuzzy RD estimates
-- Step 6 🔲: Update narrative cells for proper fuzzy RD framing
+- Step 6 🔲: Update remaining narrative cells (especially Cell 30 summary table)
+
+### First-stage results (pre-banding, BW=100)
+| Sample | α₀r | t-stat | F | N | Paper |
+|---|---|---|---|---|---|
+| Addition pre-banding | 0.462 | 11.77 | 75 | 856 | 0.785, F=1876 |
+| Addition post-banding | 0.215 | 1.19 | 1 | 85 | 0.820, F=297 |
+| Deletion pre-banding | 0.476 | 16.09 | 182 | 1208 | 0.705, F=1799 |
+| Deletion post-banding | 0.096 | 1.00 | 13 | 231 | 0.759, F=815 |
+
+**Root cause of weak first stage**: Asymmetric rank reconstruction noise. D=1,τ=0 rate: 9.2% (stocks we rank ≤1000 that Russell puts in R2000 due to float-adjusted shares < total shares). D=0,τ=1 rate: only 2.9%. This inflates E[D|τ=0] and suppresses α₀r. Cannot fix without float-adjusted shares data or NCUSIP from WRDS.
+
+**Post-banding collapse**: N=85 for addition post-banding across 6 years — banding moves the effective cutoff to rank ~1300, so stocks need to drop from ≤1000 to ~1300 in one year (rare). Essentially unusable for empirical analysis.

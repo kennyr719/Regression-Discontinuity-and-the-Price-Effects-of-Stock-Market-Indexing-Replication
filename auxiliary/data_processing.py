@@ -375,12 +375,13 @@ def compute_market_cap_rankings(data, year):
 def identify_index_switchers(
     all_rankings, year, cutoff=1000, bandwidth=100,
     addition_cutoff=None, deletion_cutoff=None,
+    bloomberg_panel=None,
 ):
     """Identify firms switching between Russell 1000 and Russell 2000.
 
     Separates stocks near the rank cutoff in year t into two samples based
     on their prior-year (t-1) index membership (proxied by reconstructed
-    rankings, since actual Russell constituent lists are unavailable):
+    rankings):
 
     - Addition sample: stocks ranked ≤ cutoff in year t-1 (in Russell 1000)
       and within [addition_cutoff-bandwidth, addition_cutoff+bandwidth] in
@@ -394,11 +395,12 @@ def identify_index_switchers(
     Post-banding (≥ 2007): pass banding-adjusted cutoffs from
     compute_banding_cutoffs(); addition_cutoff > 1000, deletion_cutoff < 1000.
 
-    Because actual Russell constituent lists are not available, prior-year
-    index membership is proxied by prior-year reconstructed rankings, and
-    current-year actual membership (D) is set equal to the rank-based
-    instrument (τ). This yields a reduced-form / sharp-RD estimator; the
-    true fuzzy-RD LATE would scale by the inverse first-stage coefficient.
+    When bloomberg_panel is provided, actual index membership (D_actual) from
+    Bloomberg constituent lists is used as the treatment indicator D.  The
+    rank-based indicator τ remains the instrument, giving a proper fuzzy 2SLS.
+    Stocks that cannot be matched in bloomberg_panel fall back to D = τ.
+
+    When bloomberg_panel is None, D = τ (sharp-RD approximation).
 
     Parameters
     ----------
@@ -417,13 +419,18 @@ def identify_index_switchers(
     deletion_cutoff : int, optional
         Effective rank cutoff for the deletion sample.  If None, defaults to
         `cutoff`.  Post-2007: compute via compute_banding_cutoffs().
+    bloomberg_panel : pd.DataFrame or None, optional
+        Output of match_bloomberg_to_crsp(): columns year, PERMNO, D_actual
+        (1=R2000, 0=R1000).  When provided, D is set from Bloomberg data
+        (with τ fallback for unmatched stocks).  Default None → sharp RD.
 
     Returns
     -------
     tuple[pd.DataFrame, pd.DataFrame]
         (addition_sample, deletion_sample).  Each DataFrame contains:
         PERMNO, gvkey, date, PRC, SHROUT, shares, market_cap, rank,
-        rank_centered, tau, D, prev_rank, year.
+        rank_centered, tau, D, D_actual, prev_rank, year.
+        D_actual == D when Bloomberg is available; D_actual == tau otherwise.
         Returns (None, None) if prior-year rankings are unavailable.
     """
     if year - 1 not in all_rankings:
@@ -472,6 +479,23 @@ def identify_index_switchers(
     deletion["rank_centered"] = deletion["rank"] - _del_c
     deletion["tau"] = (deletion["rank"] > _del_c).astype(int)
     deletion["D"] = deletion["tau"]
+
+    # ── Overlay Bloomberg D_actual (fuzzy RD) ────────────────────────────────
+    # When bloomberg_panel is provided, merge actual index membership and use
+    # it as the treatment indicator D.  Unmatched stocks fall back to D = τ.
+    if bloomberg_panel is not None:
+        bbg = bloomberg_panel[["year", "PERMNO", "D_actual"]]
+        addition = addition.merge(bbg, on=["year", "PERMNO"], how="left")
+        addition["D_actual"] = addition["D_actual"].fillna(addition["tau"])
+        addition["D"] = addition["D_actual"]
+
+        deletion = deletion.merge(bbg, on=["year", "PERMNO"], how="left")
+        deletion["D_actual"] = deletion["D_actual"].fillna(deletion["tau"])
+        deletion["D"] = deletion["D_actual"]
+    else:
+        # Sharp RD: D = τ; keep D_actual column for interface consistency
+        addition["D_actual"] = addition["tau"]
+        deletion["D_actual"] = deletion["tau"]
 
     return addition, deletion
 

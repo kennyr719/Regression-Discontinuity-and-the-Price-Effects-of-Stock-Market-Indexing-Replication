@@ -20,19 +20,26 @@ After replicating the original 1996–2012 results, we extend the sample to 2015
 
 ### What is COMPLETE and working ✅
 - **Data pipeline**: `merge_crsp_compustat()` and `compute_market_cap_rankings()` — fully implemented and verified. Rankings for 1996–2024 are correct.
-- **Sample construction**: `identify_index_switchers()` — builds addition/deletion panels using prior-year rank as membership proxy. Constructs D_actual from Bloomberg constituent data via ticker matching to CCM link (fuzzy RD).
+- **Bloomberg matching**: `match_bloomberg_to_crsp()` — matches Bloomberg constituent lists to CRSP PERMNOs via Bloomberg ticker → CCM link tic. Match rates: 55% (1996) to 98% (2024).
+- **Sample construction**: `identify_index_switchers(bloomberg_panel=...)` — accepts optional Bloomberg panel and sets D=D_actual (Bloomberg R2000 membership), falling back to D=τ for unmatched stocks. tau remains the instrument.
 - **Outcome variables**: `construct_outcome_variables()` (monthly returns) and `construct_volume_ratio()` (VR) are implemented.
-- **Estimation**: `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` — HC1-robust SEs via `S_white_simple`, optional `poly_degree=2`.
+- **Estimation**: `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` — already implement proper 2SLS (first stage: D ~ τ + rank_centered, second stage uses D_hat). HC1-robust SEs via `S_white_simple`.
 - **Bandwidth**: `optimal_bandwidth()` returns 100. `bandwidth_sensitivity()` tests h ∈ {50, 100, 150}.
 - **Validity tests**: `construct_validity_variables()` merges Compustat annual fundamentals.
-- **All notebook sections executed**: Sections 1–10 all have output.
 - **Banding**: `compute_banding_cutoffs()` uses reverse cumulative market cap (footnote 5). Verified.
 - **HC1 SEs**: Both estimation functions use HC1-robust standard errors.
 
+### First-Stage Diagnostic Results (Steps 2–4 complete)
+With Bloomberg D_actual wired in, the pre-banding first stage shows:
+- Addition pre-banding: α₀r = **0.462** (t=11.77), F=75, N=856
+- Deletion pre-banding: α₀r = **0.476** (t=16.09), F=182, N=1208
+- Post-banding: essentially unusable (F=1 addition, F=13 deletion; tiny N due to banding)
+
+**These are below the paper's α₀r ≈ 0.785/0.705** due to **asymmetric rank reconstruction noise**: total shares overestimate market cap relative to Russell's float-adjusted shares, so many stocks we rank at ~950 are actually ranked ~1050 by Russell (genuinely in R2000). The D=1,τ=0 rate is 9.2%; the D=0,τ=1 rate is only 2.9%. Cannot fix without float-adjusted shares or NCUSIP data.
+
 ### What STILL NEEDS DOING 🔲
-- Upgrade `identify_index_switchers()` to use D_actual from Bloomberg (Step 2 of IMPLEMENTATION_PLAN.md)
-- Upgrade `fuzzy_rd_estimate()` and `fuzzy_rd_time_trend()` for proper 2SLS (Steps 3–4)
-- Re-run notebook with fuzzy RD estimates and update narrative cells (Steps 5–6)
+- Re-run notebook with fuzzy RD estimates (Step 5 of IMPLEMENTATION_PLAN.md)
+- Update remaining narrative cells for fuzzy RD framing, especially Cell 30 (summary table) (Step 6)
 
 ---
 
