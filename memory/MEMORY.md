@@ -1,5 +1,45 @@
 # Project Memory
 
+## Bloomberg Constituent Data and match_bloomberg_to_crsp()
+
+### Data file
+- File: data/russell_constituents_clean.csv (86,774 rows, 1996-2024)
+- Columns: year, bbg_ticker, ticker, index (R1000/R2000), cusip (9-digit), ncusip (8-digit)
+- Coverage: 97.2% of stock-year observations have valid CUSIPs
+- Zero overlap between R1000 and R2000 in any year (verified)
+
+### Matching function: `match_bloomberg_to_crsp(bloomberg_file, ccm_link_df)`
+- Returns: DataFrame with columns (year, PERMNO, D_actual); D_actual=1 if R2000, 0 if R1000
+- **CRITICAL**: CRSP monthly does NOT include NCUSIP (not in WRDS pull). Cannot do NCUSIP matching.
+- Primary match: Bloomberg ticker → CCM link tic (exact, uppercased), within links active in June of each year
+- Secondary match: Bloomberg ticker → CCM tic with trailing `.N` suffix stripped (e.g. 'AAIC.1' → 'AAIC')
+- Unmatched stocks are dropped (not in returned panel); identify_index_switchers() will see D_actual=NaN for these
+- Deduplication: keep R2000 (D_actual=1) if same PERMNO matched twice
+- Spot checks: AAPL (PERMNO 14593) = R1000 all years ✓; AAON (PERMNO 76868) = R2000 through 2023, R1000 in 2024 ✓
+
+### Match rates by year (full table)
+```
+1996=55.1%  1997=56.8%  1998=59.6%  1999=62.6%  2000=66.0%
+2001=69.1%  2002=71.5%  2003=73.4%  2004=74.5%  2005=76.0%
+2006=77.7%  2007=80.2%  2008=82.5%  2009=83.9%  2010=84.7%
+2011=85.8%  2012=86.7%  2013=87.5%  2014=88.8%  2015=88.7%
+2016=90.2%  2017=91.7%  2018=92.6%  2019=93.7%  2020=95.0%
+2021=95.9%  2022=96.6%  2023=97.3%  2024=97.6%
+```
+- Low early years: ~35% of 1996 Bloomberg stocks have "weird" placeholder tickers (e.g. '0111145D') that never match CCM; this fraction declines to ~11% by 2010
+- Among normal-ticker stocks, ~13% additional mismatch from recently formed companies (BNI, COX, CMCSK absent from CCM in Jun 1996) or different ticker formats
+- Near-cutoff (rank 900-1100) match rates are likely substantially higher since mid-cap US stocks have stable exchange tickers
+
+### Fuzzy 2SLS upgrade progress (IMPLEMENTATION_PLAN.md)
+- Step 0 ✅: project_BACKUP_pre_fuzzy.ipynb created
+- Step 0a ✅: CLAUDE.md, AGENT_SUMMARY.md, MEMORY.md updated (sharp RD references removed)
+- Step 1 ✅: match_bloomberg_to_crsp() implemented and verified
+- Step 2 🔲: Modify identify_index_switchers() to accept bloomberg_file param and construct D_actual
+- Step 3 🔲: Upgrade fuzzy_rd_estimate() for proper 2SLS (first stage: D_actual ~ τ + rank_centered)
+- Step 4 🔲: Same for fuzzy_rd_time_trend()
+- Step 5 🔲: Re-run full notebook
+- Step 6 🔲: Update narrative cells for fuzzy RD framing
+
 ## Data Facts
 - CRSP monthly dates are the **last trading day** of each month (not necessarily the 31st).
   Filter by `date.dt.month == 5` not `date == f'{year}-05-31'`.
@@ -41,10 +81,10 @@
 - Extension 2015-2024 Addition: beta_0r = +8.357% (t=+1.51), beta_2r = -0.839% (t=-0.78), N=127 (very small)
 - Extension 2015-2024 Deletion: beta_0r = -5.284% (t=-1.40), beta_2r = -0.340% (t=-0.65), N=279
 
-## Attenuation Diagnosis
-Two sources of attenuation vs. paper's results:
-1. **D = τ (sharp RD)**: Paper uses actual Russell lists for D, instruments with τ. LATE = ITT/0.785. We set D = τ, so our estimate ≈ ITT, not LATE.
-2. **Rank reconstruction noise**: ~25–30% of stocks near rank 1000 are misclassified vs Russell's proprietary rankings (share count methodology, float vs total shares, foreign issuers). Each misclassified stock pulls treatment-group average toward zero.
+## Attenuation Diagnosis (OLD sharp RD — now superseded by Bloomberg data)
+**UPDATE: Bloomberg constituent data now available. D = τ constraint is resolved. The attenuation diagnosis below describes the OLD sharp RD results; the fuzzy 2SLS should recover estimates close to the paper's LATE.**
+1. **D = τ (sharp RD)**: Paper uses actual Russell lists for D, instruments with τ. LATE = ITT/0.785. We now have D_actual from Bloomberg.
+2. **Rank reconstruction noise**: ~25–30% of stocks near rank 1000 are misclassified vs Russell's proprietary rankings. This is now absorbed by the first stage.
 
 ## Python Environment
 - Use /Users/kennyren/anaconda3/bin/python (base anaconda) — has pandas/numpy
@@ -57,10 +97,5 @@ Two sources of attenuation vs. paper's results:
 - Deleted: files/causalgraph1.PNG, causalgraph2.PNG, bounds_nextGPA.PNG (template images)
 - Deleted: edit_notebook*.py, fix3_fix4.py (one-off scripts)
 - README.md — updated with correct project description and extension info
-## Pending Narrative Fixes (see CLAUDE.md for full plan)
-- Cell 28 (extension conclusions) has WRONG numbers from a previous run — must use Cell 27 output
-- Cell 30 (summary table) has stale t-stats — must match actual cell outputs
-- Cell 20 footer claims "May matches well" — it doesn't (addition May is 4.7x paper's)
-- Cell 24/30 claim "all insignificant" validity — 2 of 16 tests reject at 5%
-- Cell 0 intro needs sharp RD / methodological case study framing
-- All fixes are markdown or print-statement only — no computation changes needed
+## Pending Narrative Fixes
+**OBSOLETE: These fixes were for the sharp RD framing. With Bloomberg data, the narrative should instead frame this as a proper fuzzy RD replication. See IMPLEMENTATION_PLAN.md Step 6.**

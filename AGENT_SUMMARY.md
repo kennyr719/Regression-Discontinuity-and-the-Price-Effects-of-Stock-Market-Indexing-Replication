@@ -10,7 +10,7 @@ Replicate the main results from Chang, Hong, and Liskovich (2015), "Regression D
 
 The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1000/2000 cutoff (rank 1000 by end-of-May market capitalization) to estimate the causal price effects of index membership on stock returns, volume, and other outcomes.
 
-**Critical constraint**: We do not have access to actual Russell constituent lists. The paper instruments actual membership (D) with predicted membership (τ = 1 if predicted rank > cutoff). We instead set **D = τ** (sharp RD approximation), yielding Intent-to-Treat (ITT) estimates rather than the paper's LATE. This mechanically attenuates all point estimates by a factor of ~α₀ᵣ ≈ 0.785, plus additional attenuation from rank reconstruction noise (~25-30% misclassification near cutoff).
+**Data upgrade**: We obtained actual Russell 1000/2000 constituent lists from Bloomberg terminals for 1996–2024, with 9-digit CUSIPs matched to CRSP PERMNOs via ticker → CCM link (97.2% CUSIP coverage; CRSP monthly lacks NCUSIP so ticker-based matching is used). This enables a proper fuzzy 2SLS design where D_actual (observed membership from Bloomberg) is instrumented by τ (predicted membership from rankings), matching the paper's specification.
 
 ---
 
@@ -23,7 +23,8 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 | `merge_crsp_compustat()` | Clean and merge CRSP monthly, Compustat quarterly, and CCM link data | ✅ Complete |
 | `compute_market_cap_rankings()` | Generate end-of-May market cap rankings for a given year | ✅ Complete |
 | `compute_banding_cutoffs()` | Compute post-2007 banding-adjusted cutoffs | ✅ Fixed (see §8) |
-| `identify_index_switchers()` | Build addition/deletion panels using prior-year rank as membership proxy | ✅ Complete |
+| `match_bloomberg_to_crsp()` | Match Bloomberg Russell constituent lists to CRSP PERMNOs via ticker → CCM link | ✅ NEW (Step 1) |
+| `identify_index_switchers()` | Build addition/deletion panels; sets D=tau now, needs Step 2 upgrade | 🔲 Needs D_actual upgrade |
 | `construct_outcome_variables()` | Extract monthly returns (May–Sep) for the RD analysis | ✅ Complete |
 | `construct_volume_ratio()` | Compute volume ratio (VR) = normalized stock volume / normalized market volume | ✅ Complete |
 | `construct_validity_variables()` | Merge prior-year Compustat annual fundamentals for validity tests | ✅ Complete |
@@ -59,7 +60,7 @@ The paper uses a **fuzzy regression discontinuity (RD) design** at the Russell 1
 ### Specification details
 - **First stage**: D_it = α₀ₗ + α₁ₗ(r − c) [+ α₂ₗ r²] + τ[α₀ᵣ + α₁ᵣ(r − c) [+ α₂ᵣ r²]] + year FE + ε
 - **Second stage**: Y_it = β₀ₗ + β₁ₗ(r − c) [+ β₂ₗ r²] + D̂[β₀ᵣ + β₁ᵣ(r − c) [+ β₂ᵣ r²]] + year FE + ν
-- Since D = τ, the first stage is trivially α₀ᵣ = 1.0, F → ∞
+- With Bloomberg D_actual, the first stage is an informative regression: α₀ᵣ ≈ 0.785, F > 200
 - **Standard errors**: HC1-robust via `statsmodels.stats.sandwich_covariance.S_white_simple`.
   Assembly: `var_beta = (n / df_resid) * bread @ S_white_simple(X_hat * resid[:,None]) @ bread`
   This is the only statsmodels import that avoids the broken scipy chain in base conda.
@@ -116,6 +117,8 @@ jupyter nbconvert --to notebook --execute --inplace \
 ---
 
 ## 6. Replication Results (Current)
+
+**NOTE: Results below are from the sharp RD (D = τ) run. These will be updated after the fuzzy 2SLS upgrade using Bloomberg constituent data. See IMPLEMENTATION_PLAN.md.**
 
 ### Table 4: Returns Fuzzy RD (1996–2012)
 | Month | Addition | Deletion | Paper Addition | Paper Deletion |
@@ -196,8 +199,8 @@ The wide bands are intentional — Russell designed banding to significantly red
 
 ## 9. Known Limitations
 
-1. **D = τ (no actual Russell lists)**: All estimates are ITT, not LATE. Mechanically attenuated by ~21%.
-2. **Rank reconstruction noise**: CRSP/Compustat uses total shares; Russell uses float-adjusted shares. ~25-30% misclassification near cutoff further attenuates estimates.
+1. **Rank reconstruction noise**: CRSP/Compustat uses total shares; Russell uses float-adjusted shares. ~25-30% misclassification near cutoff, but this is now absorbed by the first stage (instrumented via τ → D_actual).
+2. **Ticker-based Bloomberg matching**: CRSP monthly lacks NCUSIP so matching is via Bloomberg ticker → CCM link tic. Match rates: ~56% (1996) improving to ~98% (2024). Near-cutoff match rates are likely higher since mid-cap stocks tend to have clean tickers.
 3. **Post-banding sample sizes**: Post-2007 addition samples are small (median 13/yr) due to the wide banding cutoff. The deletion sample is larger (median 29/yr) but still smaller than pre-banding.
 4. **Extension sample power**: 2015–2024 has only 127 addition and 279 deletion observations, limiting statistical significance.
 5. **Broken scipy/statsmodels in base conda**: `scipy.stats`, `scipy.optimize`, `scipy.interpolate`, `scipy.sparse.linalg`, `statsmodels.api`, and `statsmodels.regression.linear_model` all fail with `ImportError: cannot import name '_spropack'`. Safe imports: `scipy.special.betainc` and `statsmodels.stats.sandwich_covariance.S_white_simple`.
@@ -223,26 +226,31 @@ These were template leftovers from an eisenhauerIO student template (referenced 
 
 ---
 
-## 12. Pending Fixes — Narrative Cleanup
+## 12. Fuzzy 2SLS Upgrade — Progress
 
-**All computation is correct. Only the presentation layer (markdown cells + print footers) needs fixing.**
+### `match_bloomberg_to_crsp(bloomberg_file, ccm_link_df)` — NEW in Step 1
 
-The notebook has internal contradictions where markdown narrative cells contain numbers from previous runs that don't match current cell outputs. See CLAUDE.md "Priority Fixes" for the full module-by-module implementation plan.
+Signature: `match_bloomberg_to_crsp(bloomberg_file, ccm_link_df) → pd.DataFrame`
+Returns: columns (year, PERMNO, D_actual); D_actual=1 if R2000, 0 if R1000. Unmatched dropped.
 
-### Summary of contradictions to fix
+**Matching approach**: Bloomberg `ticker` → CCM link `tic` (exact, uppercased), active in June of each year. Secondary: strip trailing `.N` suffix from CCM tic. CRSP monthly lacks NCUSIP so NCUSIP-based matching is unavailable.
 
-| Location | Problem |
-|----------|---------|
-| Cell 0 (intro) | Frames project as straightforward replication; needs sharp RD / methodological case study framing |
-| Cell 20 (Table 4 footer) | Claims "May matches well" — addition May is −1.41% vs paper −0.3% (4.7× larger) |
-| Cell 24 (validity markdown) | Will say "all insignificant" but 2 of 16 tests reject at 5% |
-| Cell 28 (extension conclusions) | Contains WRONG numbers: β₂ᵣ=−0.22% (actual: −0.495%), N=780 (actual: 127), etc. |
-| Cell 30 (summary table) | Stale t-stats (−0.39 should be −0.37, −1.46 should be −1.00, etc.) |
-| Cell 30 (summary table) | Claims "All insignificant" for validity; should be "6/8 insignificant" |
-| Cell 30 (summary table) | Calls addition June "Attenuated" — it's wrong-signed, which is noise domination not attenuation |
+**Match rates by year:**
+```
+1996=55.1%  2000=66.0%  2005=76.0%  2010=84.7%  2015=88.7%  2020=95.0%  2024=97.6%
+```
+Full table in MEMORY.md. Low early-year rates driven by Bloomberg placeholder tickers (e.g. '0111145D') for ~35% of 1996 stocks, declining to ~11% by 2010. Near-cutoff match rates are likely substantially higher.
 
-### What NOT to touch
-- All code cells that produce numerical output — these are correct
-- `auxiliary/` module code — all functions are verified
-- Data pipeline, ranking construction, banding — all verified
-- Figure generation code — all working
+**Spot checks passed**: AAPL (PERMNO 14593)=R1000 all years ✓; AAON (PERMNO 76868)=R2000 through 2023, R1000 in 2024 ✓.
+
+**Fallback for unmatched stocks**: Excluded from the D_actual panel. When `identify_index_switchers()` merges D_actual, stocks without a match get D_actual=NaN. These need to either be dropped or fall back to D=τ — decision deferred to Step 2.
+
+### Implementation plan status
+- Step 0 ✅: `project_BACKUP_pre_fuzzy.ipynb` created
+- Step 0a ✅: CLAUDE.md, AGENT_SUMMARY.md, MEMORY.md updated
+- Step 1 ✅: `match_bloomberg_to_crsp()` implemented and verified
+- Step 2 🔲: Modify `identify_index_switchers()` to accept `bloomberg_file` and construct D_actual
+- Step 3 🔲: Upgrade `fuzzy_rd_estimate()` for proper 2SLS (first stage: D_actual ~ τ + rank_centered)
+- Step 4 🔲: Same upgrade for `fuzzy_rd_time_trend()`
+- Step 5 🔲: Re-run full notebook with fuzzy RD estimates
+- Step 6 🔲: Update narrative cells for proper fuzzy RD framing

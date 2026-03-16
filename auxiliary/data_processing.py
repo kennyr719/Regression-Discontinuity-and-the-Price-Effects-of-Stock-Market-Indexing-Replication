@@ -4,6 +4,109 @@ import numpy as np
 import pandas as pd
 
 
+def match_bloomberg_to_crsp(bloomberg_file, ccm_link_df):
+    """Match Bloomberg Russell constituent data to CRSP PERMNOs via ticker.
+
+    CRSP monthly does not include NCUSIP (not in the WRDS pull), so matching
+    is done via Bloomberg ticker → CCM link tic field → LPERMNO (PERMNO).
+
+    Primary match: exact Bloomberg ticker == CCM tic (uppercased).
+    Secondary match: Bloomberg ticker == CCM tic with trailing '.N' suffix
+    stripped (e.g. 'AAIC.1' → 'AAIC').
+
+    For each year, only CCM links active during June of that year are used.
+    When multiple links map to the same tic (rare), the LINKPRIM='P' link is
+    preferred over 'C'; ties are broken by keeping the first.
+
+    Parameters
+    ----------
+    bloomberg_file : str
+        Path to russell_constituents_clean.csv.
+    ccm_link_df : pd.DataFrame
+        CCM linking table as loaded by merge_crsp_compustat() — must contain
+        gvkey, tic, LINKPRIM, LINKTYPE, LPERMNO, LINKDT, LINKENDDT.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: year, PERMNO (int), D_actual (1 if R2000, 0 if R1000).
+        Only matched rows are returned (unmatched Bloomberg entries dropped).
+        Deduplicated to one row per (year, PERMNO).
+    """
+    bbg = pd.read_csv(bloomberg_file)
+
+    # Clean Bloomberg ticker
+    bbg["ticker_clean"] = bbg["ticker"].str.strip().str.upper()
+
+    # Filter CCM to valid primary links and parse dates
+    link = ccm_link_df[
+        ccm_link_df["LINKTYPE"].isin(["LC", "LU"])
+        & ccm_link_df["LINKPRIM"].isin(["P", "C"])
+    ].copy()
+    link["LINKDT"] = pd.to_datetime(link["LINKDT"], errors="coerce")
+    link["LINKENDDT"] = link["LINKENDDT"].replace("E", None)
+    link["LINKENDDT"] = pd.to_datetime(link["LINKENDDT"], errors="coerce")
+    link["LINKENDDT"] = link["LINKENDDT"].fillna(pd.Timestamp("2099-12-31"))
+
+    # Prepare clean and stripped tic columns for secondary match
+    link["tic_clean"] = link["tic"].str.strip().str.upper()
+    link["tic_stripped"] = link["tic_clean"].str.replace(r"\.\d*$", "", regex=True)
+
+    # Preference order: P before C
+    _pref = {"P": 0, "C": 1}
+
+    results = []
+    for year, bbg_yr in bbg.groupby("year"):
+        june_date = pd.Timestamp(f"{year}-06-15")
+        active = link[
+            (link["LINKDT"] <= june_date) & (link["LINKENDDT"] >= june_date)
+        ]
+
+        # One PERMNO per clean tic (prefer P link)
+        exact_map = (
+            active.sort_values("LINKPRIM", key=lambda s: s.map(_pref))
+            .drop_duplicates("tic_clean", keep="first")[["tic_clean", "LPERMNO"]]
+        )
+        # One PERMNO per stripped tic (prefer P link)
+        strip_map = (
+            active.sort_values("LINKPRIM", key=lambda s: s.map(_pref))
+            .drop_duplicates("tic_stripped", keep="first")[["tic_stripped", "LPERMNO"]]
+            .rename(columns={"LPERMNO": "LPERMNO2"})
+        )
+
+        # Primary: exact match
+        merged = bbg_yr.merge(
+            exact_map, left_on="ticker_clean", right_on="tic_clean", how="left"
+        )
+
+        # Secondary: stripped match for still-unmatched rows
+        unmatched = merged["LPERMNO"].isna()
+        if unmatched.any():
+            sec = (
+                merged.loc[unmatched, ["ticker_clean"]]
+                .merge(strip_map, left_on="ticker_clean", right_on="tic_stripped", how="left")
+            )
+            merged.loc[unmatched, "LPERMNO"] = sec["LPERMNO2"].values
+
+        merged = merged.rename(columns={"LPERMNO": "PERMNO"})
+        merged["year"] = year
+        results.append(merged[["year", "PERMNO", "index"]])
+
+    panel = pd.concat(results, ignore_index=True)
+    panel = panel.dropna(subset=["PERMNO"]).copy()
+    panel["PERMNO"] = panel["PERMNO"].astype(int)
+    panel["D_actual"] = (panel["index"] == "R2000").astype(int)
+
+    # Deduplicate: one row per (year, PERMNO) — keep R2000 if conflict
+    panel = (
+        panel.sort_values("D_actual", ascending=False)
+        .drop_duplicates(["year", "PERMNO"], keep="first")
+        .drop(columns=["index"])
+    )
+
+    return panel.reset_index(drop=True)
+
+
 def merge_crsp_compustat(crsp_monthly, compustat_quarterly, ccm_link):
     """Pre-process CRSP monthly, Compustat quarterly, and CCM link data.
 

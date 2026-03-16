@@ -7,6 +7,7 @@ from auxiliary.data_processing import (
     construct_validity_variables,
     construct_volume_ratio,
     identify_index_switchers,
+    match_bloomberg_to_crsp,
     merge_crsp_compustat,
 )
 from auxiliary.estimation import (
