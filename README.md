@@ -103,14 +103,14 @@ The notebook includes: sharp vs. fuzzy comparison, first-stage visualization, Be
 
 ## Viewing Results
 
-The notebook [`project.ipynb`](project.ipynb) is **pre-executed with all outputs embedded** — you can view the full analysis directly on GitHub without running any code. It contains 54 cells covering:
+The notebook [`project.ipynb`](project.ipynb) is **pre-executed with all outputs embedded** — you can view the full analysis directly on GitHub without running any code. It contains 60 cells covering:
 
 1. Data pipeline and ranking construction
 2. First-stage regressions (Table 3)
 3. Returns fuzzy RD and ITT (Table 4)
 4. Volume ratio, institutional ownership, short interest, and comovement (Table 5)
 5. Validity tests (Table 6)
-6. Robustness checks (Groups B and C)
+6. Robustness checks (sharp vs. fuzzy, donut hole, IO heterogeneity, clustered SEs, BH FDR)
 7. Extension analysis with ITT time trends and rolling estimates
 
 ## Reproducing the Analysis
