@@ -9,7 +9,9 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 project_BACKUP.ipynb
+project_BACKUP_pre_fuzzy.ipynb
 project.ipynb.bak
+.virtual_documents/
 
 # Archives
 Russell-RD-Replication.zip
@@ -28,15 +30,14 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Data (large files — download via WRDS)
-data/raw/
+# Data (large files — download via WRDS/Bloomberg)
+data/
 *.csv
 *.dta
 *.sas7bdat
-!data/.gitkeep
 
-# Output
-files/*.png
-files/*.pdf
-!files/.gitkeep
-data/
+# Development artifacts (not needed on GitHub)
+AGENT_SUMMARY.md
+CLAUDE.md
+NEXT_SESSION_IMPROVEMENTS.md
+memory/

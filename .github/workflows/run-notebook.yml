@@ -1,4 +1,4 @@
-name: Run Notebook
+name: Tests & Lint
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  run-notebook:
+  test:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,12 +20,10 @@ jobs:
           activate-environment: russell-rd
           auto-activate-base: false
 
-      - name: Run notebook
+      - name: Lint with Ruff
         shell: bash -l {0}
-        run: |
-          jupyter nbconvert --to notebook --execute project.ipynb
+        run: ruff check auxiliary/ tests/
 
       - name: Run tests
         shell: bash -l {0}
-        run: |
-          pytest tests/
+        run: pytest tests/ -v

@@ -2,7 +2,6 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 
 def plot_market_cap_continuity(df, cutoff=0, title="End-of-May Market Capitalization"):
@@ -105,46 +104,62 @@ def plot_rd_discontinuity(
         The generated figure.
     """
     sample = df.dropna(subset=[outcome, running]).copy()
-    
+
     # Create bin assignments
     sample['bin'] = np.floor(sample[running] / bin_width) * bin_width + (bin_width / 2)
     binned = sample.groupby('bin')[outcome].mean().reset_index()
-    
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    
+
     left_binned = binned[binned['bin'] < 0]
     right_binned = binned[binned['bin'] >= 0]
-    
-    ax.scatter(left_binned['bin'], left_binned[outcome], color='black', alpha=0.5, s=20, label='Bins < Cutoff')
-    ax.scatter(right_binned['bin'], right_binned[outcome], edgecolor='black', facecolor='white', s=20, label='Bins >= Cutoff')
-    
+
+    ax.scatter(
+        left_binned['bin'], left_binned[outcome],
+        color='black', alpha=0.5, s=20, label='Bins < Cutoff',
+    )
+    ax.scatter(
+        right_binned['bin'], right_binned[outcome],
+        edgecolor='black', facecolor='white', s=20,
+        label='Bins >= Cutoff',
+    )
+
     # Fit lines on the unbinned underlying data
     left_raw = sample[sample[running] < 0]
     right_raw = sample[sample[running] >= 0]
-    
+
     if len(left_raw) > 1:
         coef_l = np.polyfit(left_raw[running], left_raw[outcome], 1)
         x_l = np.array([left_raw[running].min(), -0.01])
         ax.plot(x_l, np.polyval(coef_l, x_l), 'k-', linewidth=2)
-        
+
     if len(right_raw) > 1:
         coef_r = np.polyfit(right_raw[running], right_raw[outcome], 1)
         x_r = np.array([0, right_raw[running].max()])
         ax.plot(x_r, np.polyval(coef_r, x_r), 'k-', linewidth=2)
-        
+
         # Calculate discontinuity gap
         if len(left_raw) > 1:
             gap = np.polyval(coef_r, 0) - np.polyval(coef_l, 0)
-            ax.text(0.05, 0.95, f"Discontinuity gap: {gap:.4f}", transform=ax.transAxes, 
-                    verticalalignment='top', bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
-            
+            ax.text(
+                0.05, 0.95,
+                f"Discontinuity gap: {gap:.4f}",
+                transform=ax.transAxes,
+                verticalalignment='top',
+                bbox=dict(
+                    boxstyle="round",
+                    facecolor="white",
+                    alpha=0.8,
+                ),
+            )
+
     ax.axvline(x=0, color='gray', linestyle='--', alpha=0.7)
     ax.set_title(title)
     ax.set_xlabel("Market Capitalization Rank (centered at cutoff)")
     ax.set_ylabel(ylabel)
     ax.legend()
     fig.tight_layout()
-    
+
     return fig
 
 
@@ -181,58 +196,158 @@ def plot_index_weights(df=None, title="Index Weights Around Upper Cutoff"):
     return None
 
 
-def plot_time_trends(estimates_df, outcome="price_impact", title="RD Estimates Over Time"):
-    """Plot rolling RD estimates over time with confidence intervals.
+def plot_first_stage(
+    df, running="rank_centered", treatment="D", bin_width=5,
+    title="First Stage: P(Russell 2000) vs. Rank", cutoff=0,
+    y_label="P(D = 1 | rank)",
+):
+    """Plot P(D=1 | rank) binned by bin_width intervals around the cutoff.
 
-    Replicates Figure 5 from Chang et al. (2015), showing how the price
-    impact and volume ratio effects evolve from 1996 to 2012.
+    Visualises the first-stage discontinuity: the fraction of stocks actually
+    assigned to the Russell 2000 (D_actual = 1) as a function of the centered
+    market-cap rank.  A clean jump at rank 0 confirms instrument relevance;
+    the magnitude of the jump is approximately α_0r from Table 3.
 
     Parameters
     ----------
-    estimates_df : pd.DataFrame
-        DataFrame with columns 'year', 'estimate', 'ci_lower', 'ci_upper'.
-    outcome : str, optional
-        Which outcome is being plotted.
+    df : pd.DataFrame
+        Data with `running` and `treatment` columns.
+    running : str, optional
+        Column name of the centered running variable (default: 'rank_centered').
+    treatment : str, optional
+        Column name of the treatment indicator (default: 'D').
+    bin_width : int, optional
+        Number of ranks per bin (default: 5).
     title : str, optional
         Plot title.
+    cutoff : float, optional
+        Centered cutoff value (default: 0).
 
     Returns
     -------
     matplotlib.figure.Figure
         The generated figure.
     """
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Optional styling for different outcome types
-    if outcome == "price_impact":
-        ylabel = "Treatment Effect (June Return)"
-        color = "blue"
-    elif outcome == "vr_impact":
-        ylabel = "Treatment Effect (Volume Ratio)"
-        color = "red"
-    else:
-        ylabel = "RD Estimate"
-        color = "black"
+    sample = df.dropna(subset=[running, treatment]).copy()
+    sample["_bin"] = (
+        np.floor((sample[running] - cutoff) / bin_width) * bin_width
+        + bin_width / 2 + cutoff
+    )
+    binned = sample.groupby("_bin")[treatment].mean().reset_index()
+    binned.columns = ["bin", "mean_d"]
 
-    years = estimates_df["year"]
-    estimates = estimates_df["estimate"]
-    ci_lower = estimates_df["ci_lower"]
-    ci_upper = estimates_df["ci_upper"]
+    left_b = binned[binned["bin"] < cutoff]
+    right_b = binned[binned["bin"] >= cutoff]
+    left_raw = sample[sample[running] < cutoff]
+    right_raw = sample[sample[running] >= cutoff]
 
-    # Fill between the confidence intervals
-    ax.fill_between(years, ci_lower, ci_upper, color=color, alpha=0.2, label="95% CI")
-    
-    # Plot the estimates line
-    ax.plot(years, estimates, color=color, marker="o", linestyle="-", linewidth=2, label="RD Estimate")
-    
-    # Add a horizontal line at 0 for reference
-    ax.axhline(0, color="k", linestyle="--", linewidth=1)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.scatter(
+        left_b["bin"], left_b["mean_d"],
+        color="black", s=25, alpha=0.7, label="Bins below cutoff",
+    )
+    ax.scatter(
+        right_b["bin"], right_b["mean_d"],
+        edgecolor="black", facecolor="white", s=25, label="Bins above cutoff",
+    )
 
+    for side in [left_raw, right_raw]:
+        if len(side) < 2:
+            continue
+        coef = np.polyfit(
+            side[running].values,
+            side[treatment].values.astype(float), 1,
+        )
+        x_fit = np.linspace(side[running].min(), side[running].max(), 200)
+        ax.plot(x_fit, np.polyval(coef, x_fit), "k-", linewidth=1.5)
+
+    ax.axvline(x=cutoff, color="gray", linestyle="--", alpha=0.7, label="Cutoff")
+    ax.set_ylim(-0.05, 1.05)
     ax.set_title(title)
-    ax.set_xlabel("Year")
-    ax.set_ylabel(ylabel)
-    ax.set_xticks(years)
-    ax.legend(loc="best")
-    
+    ax.set_xlabel("Rank Relative to Cutoff")
+    ax.set_ylabel(y_label)
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def plot_time_trends(
+    add_df, del_df,
+    title="Rolling RD Estimates Over Time",
+    ylabel="Treatment Effect",
+    add_label="Addition",
+    del_label="Deletion",
+    add_color="blue",
+    del_color="red",
+    suptitle=None,
+):
+    """Plot rolling RD estimates over time for addition and deletion samples.
+
+    Produces a 2-panel figure (addition left, deletion right) showing point
+    estimates and 95% confidence intervals from rolling RD windows.  Replicates
+    the style of Figure 5 in Chang et al. (2015).
+
+    Parameters
+    ----------
+    add_df : pd.DataFrame
+        Addition-sample rolling estimates.  Must have columns:
+        'year', 'estimate', 'ci_lower', 'ci_upper'.
+    del_df : pd.DataFrame
+        Deletion-sample rolling estimates.  Same required columns.
+    title : str, optional
+        Per-panel title suffix appended after "Addition Effect on ..." /
+        "Deletion Effect on ..." (default: "Rolling RD Estimates Over Time").
+    ylabel : str, optional
+        Y-axis label for both panels (default: "Treatment Effect").
+    add_label : str, optional
+        Legend label for the addition estimate line (default: "Addition").
+    del_label : str, optional
+        Legend label for the deletion estimate line (default: "Deletion").
+    add_color : str, optional
+        Colour for the addition panel (default: "blue").
+    del_color : str, optional
+        Colour for the deletion panel (default: "red").
+    suptitle : str or None, optional
+        Overall figure title.  If None, a default is generated from `title`.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The generated figure with two side-by-side subplots.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
+
+    panels = [
+        (axes[0], add_df, add_color, f"Addition Effect on {title}", add_label),
+        (axes[1], del_df, del_color, f"Deletion Effect on {title}", del_label),
+    ]
+
+    for ax, df, color, panel_title, label in panels:
+        if df is None or df.empty:
+            ax.text(0.5, 0.5, "Insufficient data", ha="center", va="center",
+                    transform=ax.transAxes)
+            ax.set_title(panel_title)
+            continue
+
+        years     = df["year"]
+        estimates = df["estimate"]
+        ci_lower  = df["ci_lower"]
+        ci_upper  = df["ci_upper"]
+
+        ax.fill_between(
+            years, ci_lower, ci_upper,
+            color=color, alpha=0.2, label="95% CI",
+        )
+        ax.plot(years, estimates, color=color, marker="o", linestyle="-",
+                linewidth=2, label=f"RD Estimate ({label})")
+        ax.axhline(0, color="k", linestyle="--", linewidth=1)
+        ax.set_title(panel_title)
+        ax.set_xlabel("Year (end of rolling window)")
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(years)
+        ax.tick_params(axis="x", rotation=45)
+        ax.legend(loc="best")
+
+    fig.suptitle(suptitle or f"Figure 5: {title}", fontsize=13)
     fig.tight_layout()
     return fig

@@ -2,13 +2,18 @@
 
 import numpy as np
 import pandas as pd
-from scipy.special import betainc  # scipy.stats is broken in base env; betainc is stable
-from statsmodels.stats.sandwich_covariance import S_white_simple  # HC meat, no scipy dep
+from scipy.special import (
+    betainc,  # scipy.stats is broken in base env; betainc is stable
+)
+from statsmodels.stats.sandwich_covariance import (
+    S_white_simple,  # HC meat, no scipy dep
+)
 
 
 def fuzzy_rd_estimate(
     df, outcome, treatment="D", running="rank_centered",
     instrument="tau", cutoff=0, bandwidth=100, year_fe=True, poly_degree=1,
+    exclude_donut=0, cluster=None,
 ):
     """Estimate fuzzy RD treatment effect using 2SLS.
 
@@ -64,6 +69,14 @@ def fuzzy_rd_estimate(
         Polynomial degree for the running variable (default: 1 = local linear).
         Set to 2 to add r² and D*r² terms as a robustness check (Chang et al.
         Section 4.2).
+    exclude_donut : int, optional
+        Exclude observations within ±exclude_donut ranks of the cutoff
+        (default: 0 = no donut).  Applied after the bandwidth filter.
+        Useful as a robustness check for manipulation near the exact boundary.
+    cluster : str or None, optional
+        Column name to use for cluster-robust standard errors (e.g. 'year').
+        If None (default), uses HC1-robust SEs.  With G clusters, applies
+        the standard G/(G-1) * (n-1)/(n-k) small-sample correction.
 
     Returns
     -------
@@ -86,6 +99,12 @@ def fuzzy_rd_estimate(
     """
     # ── 0. Restrict to bandwidth window and drop missing ──────────────────
     in_bw = (df[running] >= cutoff - bandwidth) & (df[running] <= cutoff + bandwidth)
+    if exclude_donut > 0:
+        not_donut = (
+            (df[running] < cutoff - exclude_donut)
+            | (df[running] > cutoff + exclude_donut)
+        )
+        in_bw = in_bw & not_donut
     cols_needed = [outcome, treatment, running, instrument]
     sample = df[in_bw].dropna(subset=cols_needed).copy()
 
@@ -202,11 +221,23 @@ def fuzzy_rd_estimate(
     # 2SLS residuals: Y − X_orig @ β̂  (use original D, not D_hat)
     resid = Y - X_orig @ beta
 
-    # HC1-robust variance via statsmodels S_white_simple (computes the meat
-    # Σᵢ ûᵢ² x̂ᵢx̂ᵢ' without triggering the broken scipy.optimize chain):
-    #   Var(β̂)_HC1 = (n/(n−k)) · (X̂'X̂)⁻¹ · meat · (X̂'X̂)⁻¹
-    meat = S_white_simple(X_hat * resid[:, None])
-    var_beta = (n / df_resid) * XhXh_inv @ meat @ XhXh_inv
+    # Variance: cluster-robust if cluster column specified, else HC1
+    if cluster is not None and cluster in sample.columns:
+        clusters = sample[cluster].values
+        unique_clusters = np.unique(clusters)
+        G = len(unique_clusters)
+        meat_c = np.zeros((k, k))
+        for g in unique_clusters:
+            mask = (clusters == g)
+            xr_g = (X_hat[mask] * resid[mask, None]).sum(axis=0)
+            meat_c += np.outer(xr_g, xr_g)
+        correction = (G / (G - 1)) * ((n - 1) / df_resid)
+        var_beta = correction * XhXh_inv @ meat_c @ XhXh_inv
+    else:
+        # HC1-robust via statsmodels S_white_simple (avoids broken scipy chain):
+        #   Var(β̂)_HC1 = (n/(n−k)) · (X̂'X̂)⁻¹ · meat · (X̂'X̂)⁻¹
+        meat = S_white_simple(X_hat * resid[:, None])
+        var_beta = (n / df_resid) * XhXh_inv @ meat @ XhXh_inv
 
     # β_0r is at index n_base (first D_hat column) in X_hat
     d_idx = n_base
@@ -445,6 +476,123 @@ def fuzzy_rd_time_trend(
     }
 
 
+def reduced_form_time_trend(
+    df, outcome, running="rank_centered", instrument="tau",
+    cutoff=0, bandwidth=100, base_year=1996, poly_degree=1,
+):
+    """Estimate the reduced-form (ITT) effect with a linear time trend.
+
+    ITT counterpart to fuzzy_rd_time_trend().  Regresses Y directly on τ
+    with a time trend interaction — no first stage, so estimates are
+    well-identified regardless of instrument strength (F-stat irrelevant).
+
+    Specification:
+        Y_it = γ_0l + γ_1l(r_it) [+ γ_2l r²] + γ_3l*t
+               + τ_it[γ_0r + γ_1r(r_it) [+ γ_2r r²] + γ_3r*t] + ε_it
+
+    γ_0r = base ITT at t = 0 (= base_year).
+    γ_3r = annual change in ITT.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data with outcome, running variable, instrument, and 'year' columns.
+    outcome : str
+        Column name of the outcome variable.
+    running : str, optional
+        Column name of the centered running variable (default: 'rank_centered').
+    instrument : str, optional
+        Column name of the instrument τ (default: 'tau').
+    cutoff : float, optional
+        Cutoff value (default: 0).
+    bandwidth : int, optional
+        Half-width of the estimation window (default: 100).
+    base_year : int, optional
+        Year corresponding to t = 0 (default: 1996).
+    poly_degree : int, optional
+        Polynomial degree (1 = linear, 2 = quadratic).
+
+    Returns
+    -------
+    dict or None
+        None if the sample is too small.  Otherwise a dict with keys:
+        'coef' (γ_0r), 'coef_t' (γ_3r), 'se', 'se_t', 't_stat', 't_stat_t',
+        'p_value', 'p_value_t', 'r_squared', 'n_obs'.
+    """
+    in_bw = (df[running] >= cutoff - bandwidth) & (df[running] <= cutoff + bandwidth)
+    cols_needed = [outcome, running, instrument, "year"]
+    sample = df[in_bw].dropna(subset=cols_needed).copy()
+    n = len(sample)
+
+    # Base exog: [1, r, (r²), t]; instrument terms: [τ, τ*r, (τ*r²), τ*t]
+    n_base = 3 + (1 if poly_degree >= 2 else 0)
+    n_tau = 3 + (1 if poly_degree >= 2 else 0)
+    k = n_base + n_tau
+    if n <= k:
+        return None
+    df_resid = n - k
+
+    r = sample[running].values.astype(float) - cutoff
+    tau = sample[instrument].values.astype(float)
+    Y = sample[outcome].values.astype(float)
+    t = (sample["year"].values - base_year).astype(float)
+
+    # X = [1, r, (r²), t, τ, τ*r, (τ*r²), τ*t]
+    x_parts = [np.ones(n), r]
+    if poly_degree >= 2:
+        x_parts.append(r ** 2)
+    x_parts.append(t)
+    tau_idx = len(x_parts)       # index of τ → γ_0r
+    x_parts.append(tau)
+    x_parts.append(tau * r)
+    if poly_degree >= 2:
+        x_parts.append(tau * r ** 2)
+    tau_t_idx = len(x_parts)     # index of τ*t → γ_3r
+    x_parts.append(tau * t)
+    X = np.column_stack(x_parts)
+
+    try:
+        XtX_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return None
+
+    gamma = XtX_inv @ (X.T @ Y)
+    resid = Y - X @ gamma
+
+    # HC1-robust SEs
+    meat = S_white_simple(X * resid[:, None])
+    var_gamma = (n / df_resid) * XtX_inv @ meat @ XtX_inv
+
+    def _extract(idx):
+        b = float(gamma[idx])
+        se = float(np.sqrt(max(var_gamma[idx, idx], 0)))
+        tv = b / se if se > 0 else np.nan
+        pv = (
+            float(betainc(df_resid / 2, 0.5, df_resid / (df_resid + tv ** 2)))
+            if not np.isnan(tv) else np.nan
+        )
+        return b, se, tv, pv
+
+    g0r, se0r, t0r, p0r = _extract(tau_idx)
+    g3r, se3r, t3r, p3r = _extract(tau_t_idx)
+
+    SS_Y = float(np.sum((Y - Y.mean()) ** 2))
+    r2 = 1.0 - float(resid @ resid) / SS_Y if SS_Y > 0 else np.nan
+
+    return {
+        "coef": g0r,
+        "coef_t": g3r,
+        "se": se0r,
+        "se_t": se3r,
+        "t_stat": t0r,
+        "t_stat_t": t3r,
+        "p_value": p0r,
+        "p_value_t": p3r,
+        "r_squared": r2,
+        "n_obs": n,
+    }
+
+
 def optimal_bandwidth(df, outcome, running):
     """Return the canonical RD bandwidth for this project.
 
@@ -516,3 +664,125 @@ def bandwidth_sensitivity(df, outcome, bandwidths=(50, 100, 150), **kwargs):
                 "fs_F":        res["fs_F"],
             })
     return pd.DataFrame(rows)
+
+
+def reduced_form_estimate(
+    df, outcome, running="rank_centered", instrument="tau",
+    cutoff=0, bandwidth=100, year_fe=True, poly_degree=1,
+):
+    """Estimate the reduced-form (ITT) effect: regress Y directly on τ.
+
+    This is the intent-to-treat (ITT) counterpart to the fuzzy 2SLS in
+    fuzzy_rd_estimate().  Because it does not divide by the first stage,
+    the ITT is well-identified even when the instrument is weak (low F).
+
+    The LATE can be recovered as ITT / first_stage ≈ reduced_form / α_0r.
+
+    Specification:
+        Y_it = γ_0l + γ_1l(r_it) [+ γ_2l r²]
+               + τ_it[γ_0r + γ_1r(r_it) [+ γ_2r r²]] + [δ_t] + ε_it
+
+    γ_0r is the reduced-form treatment effect at the cutoff.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data with outcome, running variable, instrument, and 'year' columns.
+    outcome : str
+        Column name of the outcome variable.
+    running : str, optional
+        Column name of the centered running variable (default: 'rank_centered').
+    instrument : str, optional
+        Column name of the instrument τ (default: 'tau').
+    cutoff : float, optional
+        Cutoff value (default: 0).
+    bandwidth : int, optional
+        Half-width of the estimation window (default: 100).
+    year_fe : bool, optional
+        Include year fixed effects (default: True).
+    poly_degree : int, optional
+        Polynomial degree (1 = linear, 2 = quadratic).
+
+    Returns
+    -------
+    dict or None
+        None if the sample is too small.  Otherwise a dict with keys:
+        'coef' (γ_0r), 'se', 't_stat', 'p_value', 'r_squared', 'n_obs'.
+    """
+    in_bw = (df[running] >= cutoff - bandwidth) & (df[running] <= cutoff + bandwidth)
+    cols_needed = [outcome, running, instrument]
+    sample = df[in_bw].dropna(subset=cols_needed).copy()
+    n = len(sample)
+
+    # Build year FE dummies
+    use_fe = year_fe and "year" in sample.columns
+    if use_fe:
+        unique_years = np.sort(sample["year"].unique())
+        T = len(unique_years)
+        if T > 1:
+            year_map = {y: i for i, y in enumerate(unique_years)}
+            year_idx = np.array([year_map[y] for y in sample["year"].values])
+            fe = np.zeros((n, T - 1))
+            for j in range(1, T):
+                fe[:, j - 1] = (year_idx == j).astype(float)
+        else:
+            fe = np.empty((n, 0))
+    else:
+        fe = np.empty((n, 0))
+
+    n_base = 2 + (1 if poly_degree >= 2 else 0)
+    n_tau = 2 + (1 if poly_degree >= 2 else 0)
+    k = n_base + n_tau + fe.shape[1]
+    if n <= k:
+        return None
+    df_resid = n - k
+
+    r = sample[running].values.astype(float) - cutoff
+    tau = sample[instrument].values.astype(float)
+    Y = sample[outcome].values.astype(float)
+
+    def _hstack(base, extra):
+        return np.column_stack([base, extra]) if extra.shape[1] > 0 else base
+
+    # X = [1, r, (r²), τ, τ*r, (τ*r²), year_FEs]
+    x_parts = [np.ones(n), r]
+    if poly_degree >= 2:
+        x_parts.append(r ** 2)
+    tau_idx = len(x_parts)
+    x_parts.append(tau)
+    x_parts.append(tau * r)
+    if poly_degree >= 2:
+        x_parts.append(tau * r ** 2)
+    X = _hstack(np.column_stack(x_parts), fe)
+
+    try:
+        XtX_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return None
+
+    gamma = XtX_inv @ (X.T @ Y)
+    resid = Y - X @ gamma
+
+    # HC1-robust SEs
+    meat = S_white_simple(X * resid[:, None])
+    var_gamma = (n / df_resid) * XtX_inv @ meat @ XtX_inv
+
+    gamma_0r = float(gamma[tau_idx])
+    se = float(np.sqrt(max(var_gamma[tau_idx, tau_idx], 0)))
+    t_stat = gamma_0r / se if se > 0 else np.nan
+    p_val = (
+        float(betainc(df_resid / 2, 0.5, df_resid / (df_resid + t_stat ** 2)))
+        if not np.isnan(t_stat) else np.nan
+    )
+
+    SS_Y = float(np.sum((Y - Y.mean()) ** 2))
+    r2 = 1.0 - float(resid @ resid) / SS_Y if SS_Y > 0 else np.nan
+
+    return {
+        "coef": gamma_0r,
+        "se": se,
+        "t_stat": t_stat,
+        "p_value": p_val,
+        "r_squared": r2,
+        "n_obs": n,
+    }

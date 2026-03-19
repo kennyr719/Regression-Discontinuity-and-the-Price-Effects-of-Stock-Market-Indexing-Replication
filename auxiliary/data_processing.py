@@ -1,44 +1,285 @@
 """Functions for data acquisition, cleaning, and processing."""
 
+import os
+import re
+
 import numpy as np
 import pandas as pd
 
 
-def match_bloomberg_to_crsp(bloomberg_file, ccm_link_df):
-    """Match Bloomberg Russell constituent data to CRSP PERMNOs via ticker.
+def load_bloomberg_float(float_file, crsp_monthly_df):
+    """Load Bloomberg EQY_FLOAT data and return dict[year, DataFrame].
 
-    CRSP monthly does not include NCUSIP (not in the WRDS pull), so matching
-    is done via Bloomberg ticker → CCM link tic field → LPERMNO (PERMNO).
+    Reads float shares from the Bloomberg float CSV file, matches Bloomberg
+    tickers to CRSP PERMNOs via NCUSIP (using russell_constituents_clean.csv
+    in the same directory), and returns per-year DataFrames with float share
+    counts in thousands.
 
-    Primary match: exact Bloomberg ticker == CCM tic (uppercased).
-    Secondary match: Bloomberg ticker == CCM tic with trailing '.N' suffix
-    stripped (e.g. 'AAIC.1' → 'AAIC').
+    Coverage: 2004–2024 only.  1996–2003 entries are absent because Bloomberg
+    does not carry historical EQY_FLOAT before 2004.  For those years,
+    compute_market_cap_rankings() automatically falls back to total shares
+    (max of CRSP SHROUT and adjusted Compustat CSHOQ), so no special handling
+    is required by the caller.
 
-    For each year, only CCM links active during June of that year are used.
-    When multiple links map to the same tic (rare), the LINKPRIM='P' link is
-    preferred over 'C'; ties are broken by keeping the first.
+    Matching uses four stages in order:
+      1. Exact (bbg_ticker, year) match via russell_constituents_clean.csv
+      2. Exact bbg_ticker match on most-recent constituent year (fallback)
+      3. Base-ticker match (strip exchange suffix, e.g. "AAPL UQ" → "AAPL"),
+         year-specific then any-year, to handle UQ/UW/UN suffix mismatches
+      4. NCUSIP-direct: Bloomberg encodes delisted stocks as "[NCUSIP] [EXCH]"
+         (e.g. "9876588D UQ") — extract the 8-char base and match to CRSP
+
+    Parameters
+    ----------
+    float_file : str
+        Path to russell_float_shares.csv.  Columns: bbg_ticker, bbg_security,
+        then integer year columns 1996–2024.  Float values are in *millions* of
+        shares; NaN / Bloomberg error strings mean no data.
+    crsp_monthly_df : pd.DataFrame
+        CRSP monthly stock file returned by merge_crsp_compustat().  Must
+        contain NCUSIP, PERMNO, date, SHROUT, CFACSHR columns.
+
+    Returns
+    -------
+    dict[int, pd.DataFrame]
+        Keys are calendar years (int).  Each value has columns:
+        ['PERMNO', 'float_shares_thou'].  One row per PERMNO.
+        Years with no matched data (i.e. 1996–2003) are absent from the dict.
+    """
+    # --- Read CSV: columns are bbg_ticker, bbg_security, 1996, 1997, …, 2024 ---
+    float_raw = pd.read_csv(float_file)
+
+    # Melt from wide to long: (bbg_ticker, year, eqy_float_millions)
+    # CSV stores year column names as strings; cast to int where possible.
+    year_cols = [
+        c for c in float_raw.columns
+        if str(c).strip().isdigit() and 1990 <= int(str(c).strip()) <= 2030
+    ]
+    long_df = float_raw.melt(
+        id_vars=["bbg_ticker"],
+        value_vars=year_cols,
+        var_name="year",
+        value_name="eqy_float_millions",
+    )
+    # Coerce to numeric: Bloomberg exports '#N/A Requesting Data...' and similar
+    # error strings for missing cells.  pd.to_numeric converts these to NaN.
+    long_df["eqy_float_millions"] = pd.to_numeric(
+        long_df["eqy_float_millions"], errors="coerce"
+    )
+    long_df = long_df.dropna(subset=["eqy_float_millions"])
+    long_df["year"] = long_df["year"].astype(int)
+    # Bloomberg float is in millions; CRSP SHROUT is in thousands
+    long_df["float_shares_thou"] = long_df["eqy_float_millions"] * 1000
+
+    # --- Match bbg_ticker → NCUSIP via russell_constituents_clean.csv ---
+    # Use year-specific (bbg_ticker, year) → ncusip mapping where available,
+    # then fall back to the most-recent-year ncusip for unmatched rows.
+    # Year-specific matching is critical: if a ticker's CUSIP changed over
+    # time (merger, spin-off), the most-recent ncusip maps to the wrong
+    # PERMNO for earlier years, inflating float shares by an order of magnitude.
+    data_dir = os.path.dirname(os.path.abspath(float_file))
+    bbg = pd.read_csv(os.path.join(data_dir, "russell_constituents_clean.csv"))
+    bbg["ncusip_upper"] = bbg["ncusip"].astype(str).str.strip().str.upper()
+
+    # Stage 1: exact (bbg_ticker, year) match
+    yr_map = bbg[["bbg_ticker", "year", "ncusip_upper"]].drop_duplicates(
+        ["bbg_ticker", "year"], keep="first"
+    )
+    long_df = long_df.merge(yr_map, on=["bbg_ticker", "year"], how="left")
+
+    # Stage 2: for unmatched rows, fall back to most-recent-year ncusip
+    unmatched = long_df["ncusip_upper"].isna()
+    if unmatched.any():
+        fallback = (
+            bbg.sort_values("year", ascending=False)
+            .drop_duplicates("bbg_ticker", keep="first")[["bbg_ticker", "ncusip_upper"]]
+            .rename(columns={"ncusip_upper": "ncusip_fallback"})
+        )
+        fb = long_df.loc[unmatched, ["bbg_ticker"]].merge(
+            fallback, on="bbg_ticker", how="left"
+        )
+        long_df.loc[unmatched, "ncusip_upper"] = fb["ncusip_fallback"].values
+
+    # Stage 3: base-ticker fallback — strip exchange suffix (e.g. "AAPL UQ" → "AAPL")
+    # Handles suffix mismatches between the float file and constituents file
+    # (Bloomberg uses UQ, UW, UN, UA etc. inconsistently across data products).
+    unmatched2 = long_df["ncusip_upper"].isna()
+    if unmatched2.any():
+        def _base_ticker(t):
+            return str(t).strip().rsplit(" ", 1)[0].upper()
+
+        bbg["base_ticker"] = bbg["bbg_ticker"].apply(_base_ticker)
+        long_df["base_ticker"] = long_df["bbg_ticker"].apply(_base_ticker)
+
+        # 3a: year-specific base-ticker match
+        base_yr_map = (
+            bbg.sort_values("year", ascending=False)
+            .drop_duplicates(["base_ticker", "year"], keep="first")[
+                ["base_ticker", "year", "ncusip_upper"]
+            ]
+        )
+        fb2 = long_df.loc[unmatched2, ["base_ticker", "year"]].merge(
+            base_yr_map, on=["base_ticker", "year"], how="left"
+        )
+        long_df.loc[unmatched2, "ncusip_upper"] = fb2["ncusip_upper"].values
+
+        # 3b: any-year base-ticker fallback (most-recent year wins)
+        unmatched3 = long_df["ncusip_upper"].isna()
+        if unmatched3.any():
+            base_any_map = (
+                bbg.sort_values("year", ascending=False)
+                .drop_duplicates("base_ticker", keep="first")[
+                    ["base_ticker", "ncusip_upper"]
+                ]
+                .rename(columns={"ncusip_upper": "ncusip_base_fb"})
+            )
+            fb3 = long_df.loc[unmatched3, ["base_ticker"]].merge(
+                base_any_map, on="base_ticker", how="left"
+            )
+            long_df.loc[unmatched3, "ncusip_upper"] = fb3["ncusip_base_fb"].values
+
+        long_df = long_df.drop(columns=["base_ticker"])
+
+    # Stage 4: NCUSIP-direct fallback for Bloomberg coded tickers.
+    # Bloomberg encodes delisted/obscure stocks as "[8-char-NCUSIP] [EXCHANGE]"
+    # (e.g. "9876588D UQ").  The base portion IS the NCUSIP — skip constituents
+    # and match directly to CRSP.
+    _ncusip_pat = re.compile(r"^[A-Z0-9]{8}$")
+    unmatched4 = long_df["ncusip_upper"].isna()
+    if unmatched4.any():
+        candidate = long_df.loc[unmatched4, "bbg_ticker"].apply(
+            lambda t: str(t).strip().rsplit(" ", 1)[0].upper()
+        )
+        is_ncusip_code = candidate.apply(lambda s: bool(_ncusip_pat.match(s)))
+        # Use .loc with the subset index to avoid shape mismatch (pandas 3.x)
+        ncusip_idx = is_ncusip_code[is_ncusip_code].index
+        long_df.loc[ncusip_idx, "ncusip_upper"] = candidate.loc[ncusip_idx].values
+
+    long_df = long_df.dropna(subset=["ncusip_upper"])
+
+    # --- Match NCUSIP → PERMNO via CRSP monthly (June or May rows) ---
+    crsp_m = crsp_monthly_df.copy()
+    crsp_m["date"] = pd.to_datetime(crsp_m["date"])
+    crsp_june = crsp_m[
+        crsp_m["date"].dt.month.isin([5, 6]) & crsp_m["NCUSIP"].notna()
+    ].copy()
+    crsp_june["ncusip_upper"] = (
+        crsp_june["NCUSIP"].astype(str).str.strip().str.upper()
+    )
+    crsp_june["year"] = crsp_june["date"].dt.year
+
+    # One PERMNO per (year, ncusip): largest SHROUT wins
+    ncusip_permno = (
+        crsp_june.sort_values("SHROUT", ascending=False)
+        .drop_duplicates(["year", "ncusip_upper"], keep="first")[
+            ["year", "ncusip_upper", "PERMNO"]
+        ]
+    )
+
+    long_df = long_df.merge(ncusip_permno, on=["year", "ncusip_upper"], how="inner")
+
+    # --- Split-adjust Bloomberg float from current basis to historical basis ---
+    # Bloomberg EQY_FLOAT via BDH PULL returns shares on the CURRENT (most recent)
+    # split-adjusted basis, not the historical share count at each end-of-May date.
+    # Example: Apple had ~910M shares in May 2010, but Bloomberg returns ~25.3B
+    # because Apple split 7:1 (2014) and 4:1 (2020) since then (7×4=28× factor).
+    #
+    # Correction formula: float_hist = float_bloomberg × (CFACSHR_latest / CFACSHR_may)
+    # CRSP convention: SHROUT × CFACSHR = constant through splits.
+    # So CFACSHR_latest / CFACSHR_may = inverse of the cumulative
+    # split factor since May.
+    crsp_m2 = crsp_monthly_df.copy()
+    crsp_m2["date"] = pd.to_datetime(crsp_m2["date"])
+
+    # CFACSHR at May (or June) of each ranking year
+    cfacshr_may_df = (
+        crsp_m2[crsp_m2["date"].dt.month.isin([5, 6])].copy()
+    )
+    cfacshr_may_df["year"] = cfacshr_may_df["date"].dt.year
+    cfacshr_may_df["month"] = cfacshr_may_df["date"].dt.month
+    cfacshr_may_df = (
+        cfacshr_may_df
+        .sort_values(
+            ["PERMNO", "year", "month", "date"],
+            ascending=[True, True, True, False],  # month asc → May(5) before June(6)
+        )
+        # keeps May; falls back to June only if no May
+        .drop_duplicates(["PERMNO", "year"], keep="first")
+        [["PERMNO", "year", "CFACSHR"]]
+        .rename(columns={"CFACSHR": "cfacshr_may"})
+    )
+
+    # Most recent CFACSHR per PERMNO (Bloomberg pull basis)
+    cfacshr_latest_df = (
+        crsp_m2.sort_values("date", ascending=False)
+        .drop_duplicates("PERMNO", keep="first")[["PERMNO", "CFACSHR"]]
+        .rename(columns={"CFACSHR": "cfacshr_latest"})
+    )
+
+    long_df = long_df.merge(cfacshr_may_df, on=["PERMNO", "year"], how="left")
+    long_df = long_df.merge(cfacshr_latest_df, on="PERMNO", how="left")
+
+    # Adjustment factor = CFACSHR_latest / CFACSHR_may; default 1.0 when missing
+    adj_factor = (
+        long_df["cfacshr_latest"].replace(0, np.nan)
+        / long_df["cfacshr_may"].replace(0, np.nan)
+    ).fillna(1.0)
+    long_df["float_shares_thou"] = long_df["float_shares_thou"] * adj_factor
+
+    # Deduplicate: one row per (PERMNO, year), prefer highest float
+    long_df = (
+        long_df.sort_values("float_shares_thou", ascending=False)
+        .drop_duplicates(["PERMNO", "year"], keep="first")
+    )
+
+    # Return as dict[year → DataFrame]
+    result = {}
+    for year, grp in long_df.groupby("year"):
+        result[int(year)] = grp[["PERMNO", "float_shares_thou"]].reset_index(drop=True)
+
+    return result
+
+
+def match_bloomberg_to_crsp(bloomberg_file, ccm_link_df, crsp_monthly_df=None):
+    """Match Bloomberg Russell constituent data to CRSP PERMNOs.
+
+    Three-stage matching for each reconstitution year:
+
+    Stage 1 (NCUSIP — primary): Bloomberg ncusip (8-digit) matched to CRSP
+    NCUSIP from June of the reconstitution year.  Requires crsp_monthly_df
+    with a NCUSIP column.  When one Bloomberg NCUSIP maps to multiple PERMNOs
+    (multiple share classes), the PERMNO with the largest SHROUT is kept.
+
+    Stage 2 (ticker exact — fallback): Bloomberg ticker matched to CCM tic
+    (uppercased, active links during June of year t).  LINKPRIM='P' preferred.
+
+    Stage 3 (ticker stripped — fallback): As Stage 2 but with trailing numeric
+    suffix removed (e.g. 'AAIC.1' → 'AAIC').
+
+    Unmatched rows are dropped (caller falls back to D = τ for those stocks).
 
     Parameters
     ----------
     bloomberg_file : str
         Path to russell_constituents_clean.csv.
     ccm_link_df : pd.DataFrame
-        CCM linking table as loaded by merge_crsp_compustat() — must contain
-        gvkey, tic, LINKPRIM, LINKTYPE, LPERMNO, LINKDT, LINKENDDT.
+        CCM linking table — must contain gvkey, tic, LINKPRIM, LINKTYPE,
+        LPERMNO, LINKDT, LINKENDDT.
+    crsp_monthly_df : pd.DataFrame, optional
+        CRSP monthly stock file with NCUSIP, PERMNO, date, SHROUT columns.
+        When provided, enables Stage 1 NCUSIP matching.
 
     Returns
     -------
     pd.DataFrame
         Columns: year, PERMNO (int), D_actual (1 if R2000, 0 if R1000).
-        Only matched rows are returned (unmatched Bloomberg entries dropped).
-        Deduplicated to one row per (year, PERMNO).
+        Only matched rows are returned; deduplicated to one row per (year, PERMNO).
     """
     bbg = pd.read_csv(bloomberg_file)
-
-    # Clean Bloomberg ticker
     bbg["ticker_clean"] = bbg["ticker"].str.strip().str.upper()
+    bbg["ncusip_clean"] = bbg["ncusip"].astype(str).str.strip().str.upper()
 
-    # Filter CCM to valid primary links and parse dates
+    # --- Prepare CCM ticker maps (Stages 2 & 3) ---
     link = ccm_link_df[
         ccm_link_df["LINKTYPE"].isin(["LC", "LU"])
         & ccm_link_df["LINKPRIM"].isin(["P", "C"])
@@ -47,13 +288,35 @@ def match_bloomberg_to_crsp(bloomberg_file, ccm_link_df):
     link["LINKENDDT"] = link["LINKENDDT"].replace("E", None)
     link["LINKENDDT"] = pd.to_datetime(link["LINKENDDT"], errors="coerce")
     link["LINKENDDT"] = link["LINKENDDT"].fillna(pd.Timestamp("2099-12-31"))
-
-    # Prepare clean and stripped tic columns for secondary match
     link["tic_clean"] = link["tic"].str.strip().str.upper()
     link["tic_stripped"] = link["tic_clean"].str.replace(r"\.\d*$", "", regex=True)
-
-    # Preference order: P before C
     _pref = {"P": 0, "C": 1}
+
+    # --- Prepare CRSP NCUSIP lookup (Stage 1) ---
+    ncusip_lookup = {}  # year → DataFrame(NCUSIP, PERMNO) deduplicated by SHROUT
+    if crsp_monthly_df is not None and "NCUSIP" in crsp_monthly_df.columns:
+        crsp_m = crsp_monthly_df.copy()
+        crsp_m["date"] = pd.to_datetime(crsp_m["date"])
+        crsp_m["ncusip_upper"] = crsp_m["NCUSIP"].astype(str).str.strip().str.upper()
+        for year in bbg["year"].unique():
+            # Prefer June; fall back to May if June missing for a PERMNO
+            june_crsp = crsp_m[
+                (crsp_m["date"].dt.year == year)
+                & (crsp_m["date"].dt.month.isin([5, 6]))
+                & (crsp_m["ncusip_upper"].str.len() > 0)
+                & (crsp_m["ncusip_upper"] != "NAN")
+            ].copy()
+            if june_crsp.empty:
+                continue
+            # For each NCUSIP, keep the PERMNO with the largest SHROUT
+            june_crsp = (
+                june_crsp.sort_values("SHROUT", ascending=False)
+                .drop_duplicates("ncusip_upper", keep="first")[
+                    ["ncusip_upper", "PERMNO"]
+                ]
+                .rename(columns={"PERMNO": "PERMNO_ncusip"})
+            )
+            ncusip_lookup[year] = june_crsp
 
     results = []
     for year, bbg_yr in bbg.groupby("year"):
@@ -62,33 +325,53 @@ def match_bloomberg_to_crsp(bloomberg_file, ccm_link_df):
             (link["LINKDT"] <= june_date) & (link["LINKENDDT"] >= june_date)
         ]
 
-        # One PERMNO per clean tic (prefer P link)
-        exact_map = (
-            active.sort_values("LINKPRIM", key=lambda s: s.map(_pref))
-            .drop_duplicates("tic_clean", keep="first")[["tic_clean", "LPERMNO"]]
-        )
-        # One PERMNO per stripped tic (prefer P link)
-        strip_map = (
-            active.sort_values("LINKPRIM", key=lambda s: s.map(_pref))
-            .drop_duplicates("tic_stripped", keep="first")[["tic_stripped", "LPERMNO"]]
-            .rename(columns={"LPERMNO": "LPERMNO2"})
-        )
+        # Stage 1: NCUSIP match
+        merged = bbg_yr.copy()
+        merged["PERMNO"] = np.nan
+        if year in ncusip_lookup:
+            ncusip_map = ncusip_lookup[year]
+            matched = merged.merge(
+                ncusip_map, left_on="ncusip_clean", right_on="ncusip_upper", how="left"
+            )
+            merged["PERMNO"] = matched["PERMNO_ncusip"].values
 
-        # Primary: exact match
-        merged = bbg_yr.merge(
-            exact_map, left_on="ticker_clean", right_on="tic_clean", how="left"
-        )
-
-        # Secondary: stripped match for still-unmatched rows
-        unmatched = merged["LPERMNO"].isna()
+        # Stage 2: ticker exact match (for unmatched rows)
+        unmatched = merged["PERMNO"].isna()
         if unmatched.any():
+            exact_map = (
+                active.sort_values("LINKPRIM", key=lambda s: s.map(_pref))
+                .drop_duplicates("tic_clean", keep="first")[["tic_clean", "LPERMNO"]]
+            )
             sec = (
                 merged.loc[unmatched, ["ticker_clean"]]
-                .merge(strip_map, left_on="ticker_clean", right_on="tic_stripped", how="left")
+                .merge(
+                    exact_map,
+                    left_on="ticker_clean",
+                    right_on="tic_clean",
+                    how="left",
+                )
             )
-            merged.loc[unmatched, "LPERMNO"] = sec["LPERMNO2"].values
+            merged.loc[unmatched, "PERMNO"] = sec["LPERMNO"].values
 
-        merged = merged.rename(columns={"LPERMNO": "PERMNO"})
+        # Stage 3: ticker stripped match (for still-unmatched rows)
+        unmatched = merged["PERMNO"].isna()
+        if unmatched.any():
+            strip_map = (
+                active.sort_values("LINKPRIM", key=lambda s: s.map(_pref))
+                .drop_duplicates("tic_stripped", keep="first")
+                [["tic_stripped", "LPERMNO"]]
+            )
+            sec = (
+                merged.loc[unmatched, ["ticker_clean"]]
+                .merge(
+                    strip_map,
+                    left_on="ticker_clean",
+                    right_on="tic_stripped",
+                    how="left",
+                )
+            )
+            merged.loc[unmatched, "PERMNO"] = sec["LPERMNO"].values
+
         merged["year"] = year
         results.append(merged[["year", "PERMNO", "index"]])
 
@@ -206,7 +489,7 @@ def merge_crsp_compustat(crsp_monthly, compustat_quarterly, ccm_link):
     }
 
 
-def compute_market_cap_rankings(data, year):
+def compute_market_cap_rankings(data, year, float_shares_df=None):
     """Compute end-of-May market capitalization rankings for a given year.
 
     Follows Chang et al. (2015, Section 1.1):
@@ -215,7 +498,8 @@ def compute_market_cap_rankings(data, year):
        using RDQ or estimated SEC filing deadline.
     3. Adjust Compustat shares for splits/distributions (CFACSHR ratio).
     4. Take the larger of CRSP SHROUT and adjusted Compustat shares.
-    5. Market cap = abs(PRC) × shares; rank descending.
+    5. Override with Bloomberg float-adjusted shares when available.
+    6. Market cap = abs(PRC) × shares; rank descending.
 
     Eligible stocks: SHRCD in {10, 11}, EXCHCD in {1, 2, 3} (NYSE/AMEX/NASDAQ),
     closing price ≥ $1.00.
@@ -226,6 +510,12 @@ def compute_market_cap_rankings(data, year):
         Cleaned data dict returned by merge_crsp_compustat().
     year : int
         Reconstitution year (Russell ranks end-of-May market caps).
+    float_shares_df : pd.DataFrame or None, optional
+        Per-year float shares from load_bloomberg_float().  Must have columns
+        ['PERMNO', 'float_shares_thou'] (thousands of shares).  When provided,
+        float shares replace max(CRSP, Compustat) for matched stocks, giving
+        rankings closer to Russell's float-adjusted methodology.  Default None
+        preserves the original total-shares behavior (backward compatible).
 
     Returns
     -------
@@ -343,12 +633,33 @@ def compute_market_cap_rankings(data, year):
     compustat_shares_thou = may_crsp["cshoq_millions"] * 1000 * split_adj
 
     # ------------------------------------------------------------------
-    # Step 5: Take the larger of CRSP SHROUT and adjusted Compustat shares
+    # Step 5: Take the larger of CRSP SHROUT and adjusted Compustat shares;
+    #         then override with Bloomberg float-adjusted shares when available.
+    #
+    # Russell uses float-adjusted shares (excludes insider/government holdings)
+    # for its market cap rankings.  Bloomberg EQY_FLOAT provides end-of-May
+    # float counts (in millions) for 2004–2024, which are closer to Russell's
+    # methodology than total shares outstanding.
     # ------------------------------------------------------------------
     crsp_shares = may_crsp["SHROUT"].astype(float)
     shares = crsp_shares.copy()
     has_comp = compustat_shares_thou.notna()
-    shares[has_comp] = np.maximum(crsp_shares[has_comp], compustat_shares_thou[has_comp])
+    shares[has_comp] = np.maximum(
+        crsp_shares[has_comp], compustat_shares_thou[has_comp]
+    )
+
+    if float_shares_df is not None and len(float_shares_df) > 0:
+        may_crsp = may_crsp.merge(
+            float_shares_df[["PERMNO", "float_shares_thou"]], on="PERMNO", how="left"
+        )
+        has_float = (
+            may_crsp["float_shares_thou"].notna()
+            & (may_crsp["float_shares_thou"] > 0)
+        )
+        shares[has_float] = may_crsp.loc[has_float, "float_shares_thou"].values
+    else:
+        may_crsp["float_shares_thou"] = np.nan
+
     may_crsp["shares"] = shares  # thousands of shares
 
     # ------------------------------------------------------------------
@@ -551,7 +862,10 @@ def compute_banding_cutoffs(rankings_df, year):
     # Reverse cumulation: sum market caps from rank k to N (bottom-up)
     df_rev = df.sort_values("rank", ascending=False)
     df_rev["cum_mktcap_rev"] = df_rev["market_cap"].cumsum()
-    df["cum_pct_rev"] = df_rev.set_index("rank")["cum_mktcap_rev"].reindex(df["rank"].values).values / total_mktcap
+    cum_rev = df_rev.set_index("rank")["cum_mktcap_rev"]
+    df["cum_pct_rev"] = (
+        cum_rev.reindex(df["rank"].values).values / total_mktcap
+    )
 
     c_rev_1000 = float(df.loc[df["rank"] == 1000, "cum_pct_rev"].iloc[0])
 
@@ -761,7 +1075,9 @@ def construct_volume_ratio(data, year, months=(5, 6, 7, 8, 9)):
         # Market VR component
         target_ym = year * 100 + target_month
         mkt_current = float(mkt_monthly.get(target_ym, 0.0))
-        mkt_trail_avg = float(np.mean([mkt_monthly.get(ym, 0.0) for ym in trailing_yms]))
+        mkt_trail_avg = float(np.mean(
+            [mkt_monthly.get(ym, 0.0) for ym in trailing_yms]
+        ))
         if mkt_trail_avg <= 0:
             series_list.append(pd.Series(name=col_name, dtype=float))
             continue
@@ -794,7 +1110,7 @@ def construct_volume_ratio(data, year, months=(5, 6, 7, 8, 9)):
 
     result = pd.concat(series_list, axis=1).reset_index()
     result["year"] = year
-    return result
+    return result  # end construct_volume_ratio
 
 
 def construct_outcome_variables(data, year, months=(5, 6, 7, 8, 9)):
@@ -805,9 +1121,8 @@ def construct_outcome_variables(data, year, months=(5, 6, 7, 8, 9)):
     be merged with addition/deletion panels from identify_index_switchers()
     on ['PERMNO', 'year'].
 
-    Volume ratio (VR) and comovement beta require CRSP daily data and are
-    not constructed here; they should be computed separately when crsp_daily
-    is loaded.
+    Volume ratio (VR) is constructed by construct_volume_ratio(); comovement
+    beta is constructed by construct_comovement() using crsp_daily.
 
     Parameters
     ----------
@@ -842,4 +1157,217 @@ def construct_outcome_variables(data, year, months=(5, 6, 7, 8, 9)):
 
     result = pd.concat(series_list, axis=1).reset_index()
     result["year"] = year
+    return result
+
+
+def construct_io_variable(panel, io_file):
+    """Merge institutional ownership (IO) onto the addition/deletion panel.
+
+    Uses LSEG/Thomson 13F ownership summary file (pre-aggregated by stock
+    and quarter).  Matches via 8-digit CUSIP and uses the Q2 observation
+    (report date closest to June 30 of each reconstitution year), with a
+    Q1 fallback.
+
+    Parameters
+    ----------
+    panel : pd.DataFrame
+        Addition or deletion panel from identify_index_switchers(), must
+        contain PERMNO, year, and NCUSIP columns.
+    io_file : str
+        Path to thomson_13f.csv.gz.  Must contain rdate, cusip (8-digit),
+        InstOwn_Perc (decimal 0–1).
+
+    Returns
+    -------
+    pd.DataFrame
+        Input panel with an 'IO' column (institutional ownership, decimal).
+        NaN where no 13F record is available.
+    """
+    io = pd.read_csv(io_file, usecols=["rdate", "cusip", "InstOwn_Perc"])
+    io["rdate"] = pd.to_datetime(io["rdate"])
+    io["year"] = io["rdate"].dt.year
+    io["quarter"] = io["rdate"].dt.quarter
+    io["cusip_clean"] = io["cusip"].astype(str).str.strip().str.upper()
+
+    # Keep Q1 and Q2; prefer Q2 (right after reconstitution)
+    io_q = io[io["quarter"].isin([1, 2])].copy()
+    io_q = (
+        io_q.sort_values("quarter", ascending=False)
+        .drop_duplicates(["year", "cusip_clean"], keep="first")
+        [["year", "cusip_clean", "InstOwn_Perc"]]
+        .rename(columns={"InstOwn_Perc": "IO"})
+    )
+
+    if "NCUSIP" not in panel.columns:
+        panel = panel.copy()
+        panel["IO"] = np.nan
+        return panel
+
+    panel = panel.copy()
+    panel["ncusip_clean"] = panel["NCUSIP"].astype(str).str.strip().str.upper()
+    merged = panel.merge(
+        io_q, left_on=["year", "ncusip_clean"], right_on=["year", "cusip_clean"],
+        how="left"
+    )
+    merged = merged.drop(columns=["cusip_clean", "ncusip_clean"], errors="ignore")
+    return merged
+
+
+def construct_sr_variable(panel, sr_file, ccm_link_df):
+    """Merge short interest ratio (SR) onto the addition/deletion panel.
+
+    Uses Compustat semi-monthly short interest (comp.sec_shortint).  Links
+    Compustat GVKEY → PERMNO via CCM, then finds the observation closest to
+    June 30 of each reconstitution year.
+
+    SR = shortintadj / (SHROUT × 1000)
+    (shortintadj in shares; CRSP SHROUT in thousands)
+
+    Coverage: 2006-07 onward (hard floor in Compustat source data;
+    pre-2006 NYSE/AMEX exchange-level data used by CHL 2015 is not in WRDS).
+    SR will be NaN for all years before 2007.  Use 2006 as the base year
+    for the SR time-trend specification, not 1996.
+
+    Parameters
+    ----------
+    panel : pd.DataFrame
+        Addition or deletion panel; must contain PERMNO, year, SHROUT.
+    sr_file : str
+        Path to compustat_short_interest.csv.gz.
+    ccm_link_df : pd.DataFrame
+        CCM linking table as returned by merge_crsp_compustat()['ccm_link'].
+
+    Returns
+    -------
+    pd.DataFrame
+        Input panel with an 'SR' column (short ratio, decimal).
+        NaN where no short interest record is available.
+    """
+    sr = pd.read_csv(sr_file, usecols=["gvkey", "datadate", "shortintadj"])
+    sr["datadate"] = pd.to_datetime(sr["datadate"])
+    sr["year"] = sr["datadate"].dt.year
+    sr["gvkey"] = sr["gvkey"].astype(str).str.zfill(6)
+
+    # Observation closest to June 30 for each (gvkey, year)
+    sr["june30"] = pd.to_datetime(sr["year"].astype(str) + "-06-30")
+    sr["days_from_june30"] = (sr["datadate"] - sr["june30"]).abs().dt.days
+    sr_june = (
+        sr.sort_values("days_from_june30")
+        .drop_duplicates(["gvkey", "year"], keep="first")
+        [["gvkey", "year", "shortintadj"]]
+    )
+
+    # Link GVKEY → PERMNO via CCM (prefer P link), date-bounded per year
+    link = ccm_link_df.copy()
+    link["gvkey"] = link["gvkey"].astype(str).str.zfill(6)
+    link = link[link["LINKPRIM"].isin(["P", "C"])].copy()
+    link["LINKDT"] = pd.to_datetime(link["LINKDT"])
+    link["LINKENDDT"] = pd.to_datetime(link["LINKENDDT"])
+
+    panel = panel.copy()
+    parts = []
+    for yr, sub in panel.groupby("year"):
+        june_date = pd.Timestamp(f"{yr}-06-15")
+        active = link[
+            (link["LINKDT"] <= june_date) & (link["LINKENDDT"] >= june_date)
+        ]
+        gvkey_permno_yr = (
+            active.sort_values("LINKPRIM", key=lambda s: s.map({"P": 0, "C": 1}))
+            .drop_duplicates("gvkey", keep="first")[["gvkey", "LPERMNO"]]
+            .rename(columns={"LPERMNO": "PERMNO_sr"})
+        )
+        sr_yr = sr_june[sr_june["year"] == yr].merge(
+            gvkey_permno_yr, on="gvkey", how="inner"
+        )
+        merged_yr = sub.merge(
+            sr_yr[["PERMNO_sr", "year", "shortintadj"]],
+            left_on=["PERMNO", "year"],
+            right_on=["PERMNO_sr", "year"],
+            how="left",
+        ).drop(columns=["PERMNO_sr"], errors="ignore")
+        parts.append(merged_yr)
+    merged = pd.concat(parts, ignore_index=True)
+    shrout = merged["SHROUT"].astype(float) * 1000.0
+    merged["SR"] = np.where(shrout > 0, merged["shortintadj"] / shrout, np.nan)
+    merged = merged.drop(columns=["shortintadj"])
+    return merged
+
+
+def construct_comovement(panel, daily_file, r2000_file, months=(6,), min_days=15):
+    """Compute monthly Russell 2000 comovement beta for stocks in the panel.
+
+    For each (PERMNO, year-month), runs OLS of daily stock returns on daily
+    Russell 2000 index returns and returns the slope coefficient (beta).
+
+    For Table 5 replication: use months=(6,) for June comovement.
+    For time-trend tables (Tables 7–8): use months=(5,6,7,8,9).
+
+    Parameters
+    ----------
+    panel : pd.DataFrame
+        Addition or deletion panel; must contain PERMNO and year.
+    daily_file : str
+        Path to crsp_daily.csv.gz.  Must contain PERMNO, date, RET.
+    r2000_file : str
+        Path to russell2000_daily.csv.gz.  Must contain date, rut_return.
+    months : tuple of int, optional
+        Calendar months to compute beta for (default: (6,) → June only).
+    min_days : int, optional
+        Minimum trading days required for a valid beta (default: 15).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: PERMNO, year, and one 'cov_mNN' column per requested month.
+        NaN where fewer than min_days observations are available.
+    """
+    permnos = panel["PERMNO"].unique()
+    years = panel["year"].unique()
+
+    daily = pd.read_csv(daily_file, usecols=["PERMNO", "date", "RET"], low_memory=False)
+    daily["date"] = pd.to_datetime(daily["date"])
+    daily["RET"] = pd.to_numeric(daily["RET"], errors="coerce")
+    daily = daily[
+        daily["PERMNO"].isin(permnos)
+        & daily["date"].dt.year.isin(years)
+        & daily["date"].dt.month.isin(months)
+    ].dropna(subset=["RET"])
+
+    rut = pd.read_csv(r2000_file)
+    rut["date"] = pd.to_datetime(rut["date"])
+    rut = rut.rename(columns={"rut_return": "rut_ret"})
+
+    daily = daily.merge(rut[["date", "rut_ret"]], on="date", how="inner")
+    daily["year"] = daily["date"].dt.year
+    daily["month"] = daily["date"].dt.month
+
+    month_names = {5: "cov_may", 6: "cov_jun", 7: "cov_jul", 8: "cov_aug", 9: "cov_sep"}
+
+    def _beta(grp):
+        if len(grp) < min_days:
+            return np.nan
+        x = grp["rut_ret"].values
+        y = grp["RET"].values
+        var_x = np.var(x, ddof=1)
+        if var_x == 0:
+            return np.nan
+        return np.cov(x, y, ddof=1)[0, 1] / var_x
+
+    series_list = []
+    for m in months:
+        col = month_names.get(m, f"cov_m{m:02d}")
+        sub = daily[daily["month"] == m]
+
+        betas = (
+            sub.groupby(["PERMNO", "year"])
+            .apply(_beta, include_groups=False)
+            .rename(col)
+            .reset_index()
+        )
+        series_list.append(betas.set_index(["PERMNO", "year"])[col])
+
+    if not series_list:
+        return panel[["PERMNO", "year"]].drop_duplicates()
+
+    result = pd.concat(series_list, axis=1).reset_index()
     return result
