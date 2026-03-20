@@ -1,8 +1,10 @@
 # Regression Discontinuity and the Price Effects of Stock Market Indexing
 
+**[View the full analysis notebook](project.ipynb)**
+
 ## Replication and Extension
 
-This repository contains a replication of the main results from Chang, Hong, and Liskovich (2015) for [ECON 481: Economics Data Science](https://catalog.registrar.washington.edu/course/ECON/481) at the University of Washington.
+This repository contains a replication of the main results from Chang, Hong, and Liskovich (2015).
 
 > Chang, Y.-C., Hong, H., & Liskovich, I. (2015). [Regression Discontinuity and the Price Effects of Stock Market Indexing](https://doi.org/10.1093/rfs/hhu041). *The Review of Financial Studies*, 28(1), 212–246.
 
